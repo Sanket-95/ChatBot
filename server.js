@@ -68,8 +68,10 @@ app.post("/webhook", async (req, res) => {
     let replyText = "";
 
     if (existing) {
-      replyText = `Number ${from} present in redis`;
+      // Already in Redis → Just reply list message
+      replyText = `Type 'List' to see the product list.`;
     } else {
+      // First time → Add to Redis and send welcome + list message
       const sessionData = {
         agency: process.env.AGENCY,
         mobile: from,
@@ -83,7 +85,7 @@ app.post("/webhook", async (req, res) => {
         JSON.stringify(sessionData)
       );
 
-      replyText = `Number ${from} added in redis`;
+      replyText = `Welcome to ${process.env.AGENCY}! Type 'List' to see the product list.`;
     }
 
     // Send WhatsApp reply
@@ -114,7 +116,7 @@ app.post("/webhook", async (req, res) => {
    REDIS VIEW (BROWSER)
 ========================= */
 
-// Store demo data (like your old code)
+// Store demo data
 app.get("/redis/store", async (req, res) => {
   const data = {
     server: "157.245.109.223",
