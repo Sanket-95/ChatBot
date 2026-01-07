@@ -24,6 +24,7 @@ redisClient.on("error", (err) => {
   console.error("❌ Redis error:", err);
 });
 
+// Auto connect Redis on server start
 (async () => {
   await redisClient.connect();
 })();
@@ -43,7 +44,7 @@ app.get("/webhook", (req, res) => {
 });
 
 /* =========================
-   MESSAGE HANDLER
+   WHATSAPP MESSAGE HANDLER
 ========================= */
 app.post("/webhook", async (req, res) => {
   try {
@@ -55,7 +56,6 @@ app.post("/webhook", async (req, res) => {
     const from = message.from; // mobile number
     const text = message.text?.body?.toLowerCase();
 
-    // Only greeting messages
     const greetings = ["hi", "hello", "hie", "hey"];
 
     if (!text || !greetings.includes(text)) {
@@ -63,28 +63,27 @@ app.post("/webhook", async (req, res) => {
     }
 
     const redisKey = `session:${process.env.AGENCY}:${from}`;
+    const existing = await redisClient.get(redisKey);
 
-    const existingSession = await redisClient.get(redisKey);
+    let replyText = "";
 
-    let replyMessage = "";
-
-    if (existingSession) {
-      replyMessage = `Hello ${from}, session already available in redis`;
+    if (existing) {
+      replyText = `Number ${from} present in redis`;
     } else {
-      const sessionObject = {
+      const sessionData = {
         agency: process.env.AGENCY,
         mobile: from,
-        startedAt: new Date().toISOString(),
-        step: 1
+        createdAt: new Date().toISOString(),
+        lastMessage: text
       };
 
       await redisClient.setEx(
         redisKey,
         Number(process.env.SESSION_TTL),
-        JSON.stringify(sessionObject)
+        JSON.stringify(sessionData)
       );
 
-      replyMessage = `Hello ${from}, you are added in redis`;
+      replyText = `Number ${from} added in redis`;
     }
 
     // Send WhatsApp reply
@@ -94,7 +93,7 @@ app.post("/webhook", async (req, res) => {
         messaging_product: "whatsapp",
         to: from,
         type: "text",
-        text: { body: replyMessage }
+        text: { body: replyText }
       },
       {
         headers: {
@@ -106,21 +105,65 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("Webhook error:", err.response?.data || err.message);
+    console.error(err.response?.data || err.message);
     res.sendStatus(500);
   }
 });
 
 /* =========================
-   HEALTH CHECK
+   REDIS VIEW (BROWSER)
 ========================= */
+
+// Store demo data (like your old code)
+app.get("/redis/store", async (req, res) => {
+  const data = {
+    server: "157.245.109.223",
+    app: "whatsapp-bot",
+    status: "Redis Working",
+    time: new Date()
+  };
+
+  await redisClient.set("redis_test_data", JSON.stringify(data));
+
+  res.json({ message: "Data stored", data });
+});
+
+// Get demo data
+app.get("/redis/get", async (req, res) => {
+  const data = await redisClient.get("redis_test_data");
+  if (!data) return res.status(404).json({ error: "No data found" });
+  res.json(JSON.parse(data));
+});
+
+// View all WhatsApp sessions
+app.get("/redis/sessions", async (req, res) => {
+  const keys = await redisClient.keys(`session:${process.env.AGENCY}:*`);
+  const result = [];
+
+  for (const key of keys) {
+    const data = await redisClient.get(key);
+    const ttl = await redisClient.ttl(key);
+    result.push({
+      key,
+      ttl,
+      data: JSON.parse(data)
+    });
+  }
+
+  res.json(result);
+});
+
+// Health check
 app.get("/", (req, res) => {
   res.json({
-    status: "Bot running",
+    status: "Server running",
     agency: process.env.AGENCY
   });
 });
 
+/* =========================
+   START SERVER
+========================= */
 app.listen(process.env.PORT, "0.0.0.0", () => {
-  console.log(`🚀 WhatsApp bot running on port ${process.env.PORT}`);
+  console.log(`🚀 Server running on port ${process.env.PORT}`);
 });
