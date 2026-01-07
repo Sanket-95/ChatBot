@@ -1,14 +1,11 @@
-require("dotenv").config();           // Load .env
 const express = require("express");
 const redis = require("redis");
-const chatRoutes = require("./chat"); // chat module
+require("dotenv").config();
 
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 4000;
-
-// Create Redis client
+// Redis Client
 const redisClient = redis.createClient({
   socket: {
     host: process.env.REDIS_HOST,
@@ -16,28 +13,27 @@ const redisClient = redis.createClient({
   }
 });
 
-// Global Redis reference for modules
-app.locals.redis = redisClient;
+redisClient.on("connect", () => console.log("✅ Redis connected"));
+redisClient.on("error", (err) => console.error("❌ Redis error:", err));
 
-// Connect Redis before starting server
-(async () => {
-  try {
-    await redisClient.connect();
-    console.log("Redis connected");
+(async () => { await redisClient.connect(); })();
 
-    // Test route
-    app.get("/test", (req, res) => {
-      res.json({ message: "Server responding!" });
-    });
+// Make Redis accessible in request handlers
+app.locals.redisClient = redisClient;
 
-    // Mount chat module
-    app.use("/chat", chatRoutes);
+// Routes
+const webhookRoutes = require("./routes/webhook");
+const redisRoutes = require("./routes/redisRoutes");
 
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on port ${PORT}`);
-    });
+app.use("/webhook", webhookRoutes);
+app.use("/redis", redisRoutes);
 
-  } catch (err) {
-    console.error("Redis connection failed:", err);
-  }
-})();
+// Health check
+app.get("/", (req, res) => {
+  res.json({ status: "Server running", agency: process.env.AGENCY });
+});
+
+// Start server
+app.listen(process.env.PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${process.env.PORT}`);
+});
