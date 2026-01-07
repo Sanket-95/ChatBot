@@ -1,15 +1,9 @@
 const axios = require("axios");
 
-/**
- * Handle WhatsApp chat messages
- * @param {string} from - user phone number
- * @param {string} text - user message text
- * @param {RedisClient} redisClient - redis instance
- */
-async function handleChat(from, text, redisClient) {
-  const greetings = ["hi", "hello", "hie", "hey"];
-  const lowerText = text?.toLowerCase();
+const SESSION_TTL = 1800; // 30 minutes
 
+async function handleChat(from, text, redisClient) {
+  const lowerText = text?.toLowerCase();
   if (!lowerText) return null;
 
   const redisKey = `session:${process.env.AGENCY}:${from}`;
@@ -17,9 +11,13 @@ async function handleChat(from, text, redisClient) {
 
   let replyText = "";
 
+  // GREETINGS
+  const greetings = ["hi", "hello", "hie", "hey"];
   if (greetings.includes(lowerText)) {
     if (existing) {
-      replyText = `Type 'List' to see the product list.`;
+      replyText = `Type 'List' to see the product list.\nType 'Exit' to leave the session.`;
+      // Reset TTL on new message
+      await redisClient.expire(redisKey, SESSION_TTL);
     } else {
       const sessionData = {
         agency: process.env.AGENCY,
@@ -27,17 +25,27 @@ async function handleChat(from, text, redisClient) {
         createdAt: new Date().toISOString(),
         lastMessage: text
       };
-
-      await redisClient.setEx(redisKey, Number(process.env.SESSION_TTL), JSON.stringify(sessionData));
-      replyText = `Welcome to ${process.env.AGENCY}!\nType 'List' to see the product list.`;
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(sessionData));
+      replyText = `Welcome to ${process.env.AGENCY}!\nType 'List' to see the product list.\nType 'Exit' to leave the session.`;
     }
-  } 
-  // Example: more Q&A logic
+  }
+
+  // LIST COMMAND
   else if (lowerText === "list") {
-    replyText = "📃 Product List:\n1. Product A\n2. Product B\n3. Product C";
-  } 
+    replyText = "📃 Product List:\n1. Product A\n2. Product B\n3. Product C\nType 'Exit' to leave the session.";
+    if (existing) await redisClient.expire(redisKey, SESSION_TTL);
+  }
+
+  // EXIT COMMAND
+  else if (lowerText === "exit") {
+    if (existing) await redisClient.del(redisKey);
+    replyText = "Your session has been ended. Send 'Hi' to start again.";
+  }
+
+  // OTHER MESSAGES
   else {
-    replyText = "Sorry, I didn't understand. Type 'List' to see products.";
+    replyText = "Sorry, I didn't understand. Type 'List' to see products.\nType 'Exit' to leave the session.";
+    if (existing) await redisClient.expire(redisKey, SESSION_TTL);
   }
 
   // Send WhatsApp reply
