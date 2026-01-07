@@ -1,7 +1,7 @@
 const axios = require("axios");
 const db = require("./db");
 
-const SESSION_TTL = 1800; // 30 minutes
+const SESSION_TTL = Number(process.env.SESSION_TTL);
 
 async function handleChat(from, text, redisClient) {
   const lowerText = text?.toLowerCase();
@@ -19,15 +19,17 @@ async function handleChat(from, text, redisClient) {
 
   if (greetings.includes(lowerText)) {
     if (!existing) {
+      const sessionData = {
+        agency: process.env.AGENCY,
+        mobile: from,
+        createdAt: new Date().toISOString(),
+        lastMessage: "hi"
+      };
+
       await redisClient.setEx(
         redisKey,
         SESSION_TTL,
-        JSON.stringify({
-          agency: process.env.AGENCY,
-          mobile: from,
-          createdAt: new Date(),
-          lastMessage: text
-        })
+        JSON.stringify(sessionData)
       );
 
       replyText =
@@ -49,32 +51,96 @@ async function handleChat(from, text, redisClient) {
     if (!existing) {
       replyText = "Session expired. Please type 'Hi' to start again.";
     } else {
-      await redisClient.expire(redisKey, SESSION_TTL);
+      try {
+        await redisClient.expire(redisKey, SESSION_TTL);
 
-      const [rows] = await db.execute(
-        `
-        SELECT DISTINCT(category_name)
-        FROM category
-        WHERE parent_id = 0
-        AND id IN (
-          SELECT DISTINCT(ct_id)
-          FROM agency_categories
-          WHERE ag_id = ?
-        )
-        `,
-        [process.env.AGENCY_ID]
-      );
+        const [rows] = await db.execute(
+          `
+          SELECT id, category_name
+          FROM category
+          WHERE parent_id = 0
+          AND id IN (
+            SELECT DISTINCT(ct_id)
+            FROM agency_categories
+            WHERE ag_id = ?
+          )
+          `,
+          [process.env.AGENCY_ID]
+        );
 
-      if (rows.length === 0) {
-        replyText = "No categories available at the moment.";
+        if (rows.length === 0) {
+          replyText = "No categories available at the moment.";
+        } else {
+          let msg = "📦 Categories:\n\n";
+          const categoryMap = {};
+
+          rows.forEach((row, index) => {
+            const num = index + 1;
+            msg += `${num}. ${row.category_name}\n`;
+
+            categoryMap[num] = {
+              id: row.id,
+              name: row.category_name
+            };
+          });
+
+          msg +=
+            `\nReply with category number\n` +
+            `Example: Type 1\n` +
+            `Type 'Exit' to leave`;
+
+          // update redis session with category map
+          const sessionData = JSON.parse(existing);
+          sessionData.lastMessage = "list";
+          sessionData.categories = categoryMap;
+
+          await redisClient.setEx(
+            redisKey,
+            SESSION_TTL,
+            JSON.stringify(sessionData)
+          );
+
+          replyText = msg;
+        }
+      } catch (err) {
+        console.error("DB ERROR:", err.message);
+        replyText =
+          "Service temporarily unavailable.\nPlease try again later.";
+      }
+    }
+  }
+
+  /* =====================
+     CATEGORY NUMBER (1,2,3...)
+  ===================== */
+  else if (/^\d+$/.test(lowerText)) {
+    if (!existing) {
+      replyText = "Session expired. Please type 'Hi' to start again.";
+    } else {
+      const sessionData = JSON.parse(existing);
+      const selected = sessionData.categories?.[lowerText];
+
+      if (!selected) {
+        replyText =
+          "Invalid selection.\nType 'List' to see categories again.";
       } else {
-        let msg = "📦 Categories:\n\n";
-        rows.forEach((row, index) => {
-          msg += `${index + 1}. ${row.category_name}\n`;
-        });
+        await redisClient.expire(redisKey, SESSION_TTL);
 
-        msg += `\nType 'Exit' to leave the session.`;
-        replyText = msg;
+        // save selected category
+        sessionData.selectedCategory = selected;
+        sessionData.lastMessage = lowerText;
+
+        await redisClient.setEx(
+          redisKey,
+          SESSION_TTL,
+          JSON.stringify(sessionData)
+        );
+
+        replyText =
+          `You selected: ${selected.name}\n` +
+          `Category ID: ${selected.id}\n\n` +
+          `Next step coming soon...\n` +
+          `Type 'Exit' to leave.`;
       }
     }
   }
