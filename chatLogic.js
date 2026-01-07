@@ -51,6 +51,7 @@ async function handleChat(from, text, redisClient) {
       agency: process.env.AGENCY,
       mobile: from,
       createdAt: new Date().toISOString(),
+      path: [], // keep track of hierarchy
       step: "start"
     };
 
@@ -86,6 +87,10 @@ async function handleChat(from, text, redisClient) {
       [process.env.AGENCY_ID]
     );
 
+    if (!rows.length) {
+      return sendWhatsApp(from, "No categories available.");
+    }
+
     const categories = {};
     let msg = "📦 *Categories*\n\n";
 
@@ -99,8 +104,8 @@ async function handleChat(from, text, redisClient) {
     session.step = "category";
     session.categories = categories;
     session.subcategories = null;
-    session.selectedCategory = null;
-    session.selectedSubcategory = null;
+    session.path = [];
+    session.selectedId = null;
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, msg);
@@ -110,38 +115,36 @@ async function handleChat(from, text, redisClient) {
      BACK
   ===================== */
   if (input === "back" && session) {
-    if (session.step === "subcategory") {
-      session.step = "category";
-      session.subcategories = null;
-      session.selectedSubcategory = null;
-    } else if (session.step === "product") {
-      session.step = session.subcategories ? "subcategory" : "category";
+    if (session.path.length > 0) {
+      session.path.pop(); // go back one level
+      session.selectedId = session.path[session.path.length - 1] || null;
     }
+
+    session.step = session.path.length === 0 ? "category" : "subcategory";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, "⬅️ Back.\nType number to continue.");
   }
 
   /* =====================
-     CATEGORY SELECTION ✅ FIXED
+     SELECTION (CATEGORY OR SUBCATEGORY)
   ===================== */
-  if (session?.step === "category" && session.categories?.[input]) {
-    const selected = session.categories[input];
-    session.selectedCategory = selected;
-    session.subcategories = null;
-    session.selectedSubcategory = null;
+  let currentLevel = session.step === "category" ? session.categories : session.subcategories;
 
-    // ✅ CORRECT ID USED HERE
+  if (currentLevel?.[input]) {
+    const selected = currentLevel[input];
+    session.selectedId = selected.id;
+    session.path.push(selected.id);
+
+    // Check for subcategories
     const [subRows] = await db.execute(
       `SELECT id, category_name FROM category WHERE parent_id = ?`,
       [selected.id]
     );
 
-    // 👉 HAS SUBCATEGORIES
     if (subRows.length > 0) {
       const subs = {};
       let msg = `📂 *${selected.name} – Subcategories*\n\n`;
-
       subRows.forEach((r, i) => {
         subs[i + 1] = { id: r.id, name: r.category_name };
         msg += `${i + 1}. ${r.category_name}\n`;
@@ -156,7 +159,7 @@ async function handleChat(from, text, redisClient) {
       return sendWhatsApp(from, msg);
     }
 
-    // 👉 NO SUBCATEGORIES → PRODUCTS
+    // No subcategories → show products
     const [products] = await db.execute(
       `
       SELECT productname, mrp
@@ -169,40 +172,10 @@ async function handleChat(from, text, redisClient) {
     );
 
     let msg = `🛒 *Products – ${selected.name}*\n\n`;
-    products.forEach(p => {
+    if (!products.length) msg += "No products available.\n";
+    else products.forEach(p => {
       msg += `• ${p.productname} – ₹${p.mrp}\n`;
     });
-
-    msg += `\nType *Back* | *Exit*`;
-
-    session.step = "product";
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, msg);
-  }
-
-  /* =====================
-     SUBCATEGORY SELECTION ✅ FIXED
-  ===================== */
-  if (session?.step === "subcategory" && session.subcategories?.[input]) {
-    const selectedSub = session.subcategories[input];
-    session.selectedSubcategory = selectedSub;
-
-    const [products] = await db.execute(
-      `
-      SELECT productname, mrp
-      FROM product
-      WHERE is_enabled = 1
-      AND agid = ?
-      AND sbid = ?
-      `,
-      [process.env.AGENCY_ID, selectedSub.id]
-    );
-
-    let msg = `🛒 *Products – ${selectedSub.name}*\n\n`;
-    products.forEach(p => {
-      msg += `• ${p.productname} – ₹${p.mrp}\n`;
-    });
-
     msg += `\nType *Back* | *Exit*`;
 
     session.step = "product";
