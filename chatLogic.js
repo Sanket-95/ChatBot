@@ -75,7 +75,7 @@ async function handleChat(from, text, redisClient) {
 
     const [rows] = await db.execute(
       `
-      SELECT id, category_name
+      SELECT id, category_name, parent_id
       FROM category
       WHERE parent_id = 0
       AND id IN (
@@ -95,7 +95,7 @@ async function handleChat(from, text, redisClient) {
     let msg = "📦 *Categories*\n\n";
 
     rows.forEach((r, i) => {
-      categories[i + 1] = { id: r.id, name: r.category_name };
+      categories[i + 1] = { id: r.id, name: r.category_name, parent_id: r.parent_id };
       msg += `${i + 1}. ${r.category_name}\n`;
     });
 
@@ -138,7 +138,7 @@ async function handleChat(from, text, redisClient) {
 
     // Check for subcategories
     const [subRows] = await db.execute(
-      `SELECT id, category_name FROM category WHERE parent_id = ?`,
+      `SELECT id, category_name, parent_id FROM category WHERE parent_id = ?`,
       [selected.id]
     );
 
@@ -146,7 +146,7 @@ async function handleChat(from, text, redisClient) {
       const subs = {};
       let msg = `📂 *${selected.name} – Subcategories*\n\n`;
       subRows.forEach((r, i) => {
-        subs[i + 1] = { id: r.id, name: r.category_name };
+        subs[i + 1] = { id: r.id, name: r.category_name, parent_id: r.parent_id };
         msg += `${i + 1}. ${r.category_name}\n`;
       });
 
