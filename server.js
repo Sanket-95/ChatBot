@@ -85,7 +85,7 @@ app.post("/webhook", async (req, res) => {
         JSON.stringify(sessionData)
       );
 
-      replyText = `Welcome to ${process.env.AGENCY}! Type 'List' to see the product list.`;
+      replyText = `Welcome to ${process.env.AGENCY}! \nType 'List' to see the product list.`;
     }
 
     // Send WhatsApp reply
