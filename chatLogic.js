@@ -47,16 +47,12 @@ async function handleChat(from, text, redisClient) {
      GREETING
   ===================== */
   if (["hi", "hello", "hie", "hey"].includes(input)) {
-    if (!session) {
-      session = {
-        agency: process.env.AGENCY,
-        mobile: from,
-        createdAt: new Date().toISOString()
-      };
-    }
-
-    session.step = "start";
-    session.lastMessage = input;
+    session = {
+      agency: process.env.AGENCY,
+      mobile: from,
+      createdAt: new Date().toISOString(),
+      step: "start"
+    };
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
@@ -90,10 +86,6 @@ async function handleChat(from, text, redisClient) {
       [process.env.AGENCY_ID]
     );
 
-    if (!rows.length) {
-      return sendWhatsApp(from, "No categories available.");
-    }
-
     const categories = {};
     let msg = "📦 *Categories*\n\n";
 
@@ -106,10 +98,8 @@ async function handleChat(from, text, redisClient) {
 
     session.step = "category";
     session.categories = categories;
-
-    // 🔥 CLEAR LOWER STATES
-    session.selectedCategory = null;
     session.subcategories = null;
+    session.selectedCategory = null;
     session.selectedSubcategory = null;
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
@@ -117,7 +107,7 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     BACK (FIXED)
+     BACK
   ===================== */
   if (input === "back" && session) {
     if (session.step === "subcategory") {
@@ -125,11 +115,7 @@ async function handleChat(from, text, redisClient) {
       session.subcategories = null;
       session.selectedSubcategory = null;
     } else if (session.step === "product") {
-      if (session.subcategories) {
-        session.step = "subcategory";
-      } else {
-        session.step = "category";
-      }
+      session.step = session.subcategories ? "subcategory" : "category";
     }
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
@@ -137,23 +123,21 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     CATEGORY SELECTION (FIXED)
+     CATEGORY SELECTION ✅ FIXED
   ===================== */
   if (session?.step === "category" && session.categories?.[input]) {
     const selected = session.categories[input];
-
-    // 🔥 HARD RESET LOWER LEVEL
     session.selectedCategory = selected;
     session.subcategories = null;
     session.selectedSubcategory = null;
 
-    // ALWAYS CHECK SUBCATEGORIES
+    // ✅ CORRECT ID USED HERE
     const [subRows] = await db.execute(
       `SELECT id, category_name FROM category WHERE parent_id = ?`,
-      [selectedSub.id]
+      [selected.id]
     );
 
-    // 👉 Subcategories exist
+    // 👉 HAS SUBCATEGORIES
     if (subRows.length > 0) {
       const subs = {};
       let msg = `📂 *${selected.name} – Subcategories*\n\n`;
@@ -172,7 +156,7 @@ async function handleChat(from, text, redisClient) {
       return sendWhatsApp(from, msg);
     }
 
-    // 👉 NO SUBCATEGORIES → SHOW PRODUCTS
+    // 👉 NO SUBCATEGORIES → PRODUCTS
     const [products] = await db.execute(
       `
       SELECT productname, mrp
@@ -181,18 +165,13 @@ async function handleChat(from, text, redisClient) {
       AND agid = ?
       AND sbid = ?
       `,
-      [process.env.AGENCY_ID, selectedSub.id]
+      [process.env.AGENCY_ID, selected.id]
     );
 
     let msg = `🛒 *Products – ${selected.name}*\n\n`;
-
-    if (!products.length) {
-      msg += "No products available.\n";
-    } else {
-      products.forEach(p => {
-        msg += `• ${p.productname} – ₹${p.mrp}\n`;
-      });
-    }
+    products.forEach(p => {
+      msg += `• ${p.productname} – ₹${p.mrp}\n`;
+    });
 
     msg += `\nType *Back* | *Exit*`;
 
@@ -202,13 +181,12 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     SUBCATEGORY SELECTION (FIXED)
+     SUBCATEGORY SELECTION ✅ FIXED
   ===================== */
   if (session?.step === "subcategory" && session.subcategories?.[input]) {
     const selectedSub = session.subcategories[input];
     session.selectedSubcategory = selectedSub;
 
-    // ALWAYS SHOW PRODUCTS FOR SUBCATEGORY
     const [products] = await db.execute(
       `
       SELECT productname, mrp
@@ -221,14 +199,9 @@ async function handleChat(from, text, redisClient) {
     );
 
     let msg = `🛒 *Products – ${selectedSub.name}*\n\n`;
-
-    if (!products.length) {
-      msg += "No products available.\n";
-    } else {
-      products.forEach(p => {
-        msg += `• ${p.productname} – ₹${p.mrp}\n`;
-      });
-    }
+    products.forEach(p => {
+      msg += `• ${p.productname} – ₹${p.mrp}\n`;
+    });
 
     msg += `\nType *Back* | *Exit*`;
 
@@ -240,7 +213,6 @@ async function handleChat(from, text, redisClient) {
   /* =====================
      FALLBACK
   ===================== */
-  await redisClient.expire(redisKey, SESSION_TTL);
   return sendWhatsApp(
     from,
     "Invalid option.\nType *List* to see categories.\nType *Exit* to leave."
