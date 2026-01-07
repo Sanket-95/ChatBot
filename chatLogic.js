@@ -51,7 +51,7 @@ async function handleChat(from, text, redisClient) {
       agency: process.env.AGENCY,
       mobile: from,
       createdAt: new Date().toISOString(),
-      path: [], // keep track of hierarchy
+      path: [], // keep track of selected hierarchy
       step: "start"
     };
 
@@ -112,22 +112,71 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     BACK
+     BACK LOGIC (UPDATED)
   ===================== */
   if (input === "back" && session) {
-    if (session.path.length > 0) {
-      session.path.pop(); // go back one level
-      session.selectedId = session.path[session.path.length - 1] || null;
+    if (!session.selectedId) {
+      return sendWhatsApp(from, "Invalid input. Type number to select category.");
     }
 
-    session.step = session.path.length === 0 ? "category" : "subcategory";
+    // Get parent_id of current selected item
+    const [rows] = await db.execute(
+      `SELECT id, category_name, parent_id FROM category WHERE id = ?`,
+      [session.selectedId]
+    );
 
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, "⬅️ Back.\nType number to continue.");
+    if (!rows.length) {
+      return sendWhatsApp(from, "Invalid session data. Type *List* to start again.");
+    }
+
+    const current = rows[0];
+
+    if (current.parent_id === 0) {
+      // Show main categories
+      session.step = "category";
+      session.selectedId = null;
+      session.subcategories = null;
+      session.path = [];
+
+      const categories = session.categories || {};
+      let msg = "📦 *Categories*\n\n";
+      Object.keys(categories).forEach(k => {
+        msg += `${k}. ${categories[k].name}\n`;
+      });
+      msg += `\nType category number.\nType *Exit* to leave.`;
+
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, msg);
+    } else {
+      // Show subcategories of parent
+      const [subRows] = await db.execute(
+        `SELECT id, category_name, parent_id FROM category WHERE parent_id = ?`,
+        [current.parent_id]
+      );
+
+      if (!subRows.length) {
+        return sendWhatsApp(from, "No subcategories found.");
+      }
+
+      const subs = {};
+      let msg = `📂 *${subRows[0].parent_id} – Subcategories*\n\n`;
+      subRows.forEach((r, i) => {
+        subs[i + 1] = { id: r.id, name: r.category_name, parent_id: r.parent_id };
+        msg += `${i + 1}. ${r.category_name}\n`;
+      });
+      msg += `\nType number.\nType *Back* | *Exit*`;
+
+      session.subcategories = subs;
+      session.step = "subcategory";
+      session.selectedId = current.parent_id;
+
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, msg);
+    }
   }
 
   /* =====================
-     SELECTION (CATEGORY OR SUBCATEGORY)
+     SELECTION (CATEGORY / SUBCATEGORY)
   ===================== */
   let currentLevel = session.step === "category" ? session.categories : session.subcategories;
 
