@@ -181,7 +181,7 @@ async function handleChat(from, text, redisClient) {
       AND agid = ?
       AND sbid = ?
       `,
-      [process.env.AGENCY_ID, selected.id]
+      [process.env.AGENCY_ID, selectedSub.id]
     );
 
     let msg = `🛒 *Products – ${selected.name}*\n\n`;
