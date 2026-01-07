@@ -40,20 +40,23 @@ async function handleChat(from, text, redisClient) {
   ===================== */
   if (input === "exit") {
     await redisClient.del(redisKey);
-    return sendWhatsApp(from, "Session ended.\nType *Hi* to start again.");
+    return sendWhatsApp(from, "✅ Session ended.\nType *Hi* to start again.");
   }
 
   /* =====================
      GREETING
   ===================== */
   if (["hi", "hello", "hie", "hey"].includes(input)) {
-    session = {
-      agency: process.env.AGENCY,
-      mobile: from,
-      createdAt: new Date().toISOString(),
-      path: [], // keep track of selected hierarchy
-      step: "start"
-    };
+    if (!session) {
+      session = {
+        agency: process.env.AGENCY,
+        mobile: from,
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    session.step = "start";
+    session.lastMessage = input;
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
@@ -70,7 +73,7 @@ async function handleChat(from, text, redisClient) {
   ===================== */
   if (input === "list") {
     if (!session) {
-      return sendWhatsApp(from, "Session expired.\nType *Hi* to start again.");
+      return sendWhatsApp(from, "⚠️ Session expired.\nType *Hi* to start again.");
     }
 
     const [rows] = await db.execute(
@@ -87,9 +90,7 @@ async function handleChat(from, text, redisClient) {
       [process.env.AGENCY_ID]
     );
 
-    if (!rows.length) {
-      return sendWhatsApp(from, "No categories available.");
-    }
+    if (!rows.length) return sendWhatsApp(from, "No categories available.");
 
     const categories = {};
     let msg = "📦 *Categories*\n\n";
@@ -103,94 +104,28 @@ async function handleChat(from, text, redisClient) {
 
     session.step = "category";
     session.categories = categories;
+    session.selectedCategory = null;
     session.subcategories = null;
-    session.path = [];
-    session.selectedId = null;
+    session.selectedSubcategory = null;
+    session.products = null;
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, msg);
   }
 
   /* =====================
-     BACK LOGIC (UPDATED)
+     CATEGORY SELECTION
   ===================== */
-  if (input === "back" && session) {
-    if (!session.selectedId) {
-      return sendWhatsApp(from, "Invalid input. Type number to select category.");
-    }
+  if (session?.step === "category" && session.categories?.[input]) {
+    const selected = session.categories[input];
+    session.selectedCategory = selected;
 
-    // Get parent_id of current selected item
-    const [rows] = await db.execute(
-      `SELECT id, category_name, parent_id FROM category WHERE id = ?`,
-      [session.selectedId]
-    );
-
-    if (!rows.length) {
-      return sendWhatsApp(from, "Invalid session data. Type *List* to start again.");
-    }
-
-    const current = rows[0];
-
-    if (current.parent_id === 0) {
-      // Show main categories
-      session.step = "category";
-      session.selectedId = null;
-      session.subcategories = null;
-      session.path = [];
-
-      const categories = session.categories || {};
-      let msg = "📦 *Categories*\n\n";
-      Object.keys(categories).forEach(k => {
-        msg += `${k}. ${categories[k].name}\n`;
-      });
-      msg += `\nType category number.\nType *Exit* to leave.`;
-
-      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      return sendWhatsApp(from, msg);
-    } else {
-      // Show subcategories of parent
-      const [subRows] = await db.execute(
-        `SELECT id, category_name, parent_id FROM category WHERE parent_id = ?`,
-        [current.parent_id]
-      );
-
-      if (!subRows.length) {
-        return sendWhatsApp(from, "No subcategories found.");
-      }
-
-      const subs = {};
-      let msg = `📂 *${subRows[0].parent_id} – Subcategories*\n\n`;
-      subRows.forEach((r, i) => {
-        subs[i + 1] = { id: r.id, name: r.category_name, parent_id: r.parent_id };
-        msg += `${i + 1}. ${r.category_name}\n`;
-      });
-      msg += `\nType number.\nType *Back* | *Exit*`;
-
-      session.subcategories = subs;
-      session.step = "subcategory";
-      session.selectedId = current.parent_id;
-
-      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      return sendWhatsApp(from, msg);
-    }
-  }
-
-  /* =====================
-     SELECTION (CATEGORY / SUBCATEGORY)
-  ===================== */
-  let currentLevel = session.step === "category" ? session.categories : session.subcategories;
-
-  if (currentLevel?.[input]) {
-    const selected = currentLevel[input];
-    session.selectedId = selected.id;
-    session.path.push(selected.id);
-
-    // Check for subcategories
     const [subRows] = await db.execute(
       `SELECT id, category_name, parent_id FROM category WHERE parent_id = ?`,
       [selected.id]
     );
 
+    // If subcategories exist
     if (subRows.length > 0) {
       const subs = {};
       let msg = `📂 *${selected.name} – Subcategories*\n\n`;
@@ -198,11 +133,12 @@ async function handleChat(from, text, redisClient) {
         subs[i + 1] = { id: r.id, name: r.category_name, parent_id: r.parent_id };
         msg += `${i + 1}. ${r.category_name}\n`;
       });
-
-      msg += `\nType number.\nType *Back* | *Exit*`;
+      msg += `\nType number.\nType *Exit* to leave.`;
 
       session.subcategories = subs;
       session.step = "subcategory";
+      session.selectedSubcategory = null;
+      session.products = null;
 
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
       return sendWhatsApp(from, msg);
@@ -210,34 +146,141 @@ async function handleChat(from, text, redisClient) {
 
     // No subcategories → show products
     const [products] = await db.execute(
-      `
-      SELECT productname, mrp
-      FROM product
-      WHERE is_enabled = 1
-      AND agid = ?
-      AND sbid = ?
-      `,
+      `SELECT productname, mrp FROM product WHERE is_enabled = 1 AND agid = ? AND sbid = ?`,
       [process.env.AGENCY_ID, selected.id]
     );
 
+    const productObj = {};
+    products.forEach((p, i) => {
+      productObj[i + 1] = { name: p.productname, mrp: p.mrp };
+    });
+
     let msg = `🛒 *Products – ${selected.name}*\n\n`;
     if (!products.length) msg += "No products available.\n";
-    else products.forEach(p => {
-      msg += `• ${p.productname} – ₹${p.mrp}\n`;
-    });
-    msg += `\nType *Back* | *Exit*`;
+    else products.forEach(p => msg += `• ${p.productname} – ₹${p.mrp}\n`);
+
+    msg += `\nType *Add <num> <qty>* to add to cart.\nType *Remove <num>* to remove.\nType *Cart* to view.\nType *Exit* to leave.`;
 
     session.step = "product";
+    session.products = productObj;
+    session.selectedProductParent = selected;
+    session.cart = session.cart || {};
+
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, msg);
   }
 
   /* =====================
+     SUBCATEGORY SELECTION
+  ===================== */
+  if (session?.step === "subcategory" && session.subcategories?.[input]) {
+    const selectedSub = session.subcategories[input];
+    session.selectedSubcategory = selectedSub;
+
+    const [subSubRows] = await db.execute(
+      `SELECT id, category_name, parent_id FROM category WHERE parent_id = ?`,
+      [selectedSub.id]
+    );
+
+    // Sub-subcategories exist
+    if (subSubRows.length > 0) {
+      const subs = {};
+      let msg = `📂 *${selectedSub.name} – Subcategories*\n\n`;
+      subSubRows.forEach((r, i) => {
+        subs[i + 1] = { id: r.id, name: r.category_name, parent_id: r.parent_id };
+        msg += `${i + 1}. ${r.category_name}\n`;
+      });
+      msg += `\nType number.\nType *Exit* to leave.`;
+
+      session.subcategories = subs;
+      session.selectedSubcategory = null;
+      session.products = null;
+      session.step = "subcategory";
+
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, msg);
+    }
+
+    // No further subcategories → show products
+    const [products] = await db.execute(
+      `SELECT productname, mrp FROM product WHERE is_enabled = 1 AND agid = ? AND sbid = ?`,
+      [process.env.AGENCY_ID, selectedSub.id]
+    );
+
+    const productObj = {};
+    products.forEach((p, i) => {
+      productObj[i + 1] = { name: p.productname, mrp: p.mrp };
+    });
+
+    let msg = `🛒 *Products – ${selectedSub.name}*\n\n`;
+    if (!products.length) msg += "No products available.\n";
+    else products.forEach(p => msg += `• ${p.productname} – ₹${p.mrp}\n`);
+
+    msg += `\nType *Add <num> <qty>* to add to cart.\nType *Remove <num>* to remove.\nType *Cart* to view.\nType *Exit* to leave.`;
+
+    session.step = "product";
+    session.products = productObj;
+    session.selectedProductParent = selectedSub;
+    session.cart = session.cart || {};
+
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg);
+  }
+
+  /* =====================
+     CART LOGIC
+  ===================== */
+  if (session?.step === "product") {
+    // Show cart
+    if (input === "cart") {
+      if (!session.cart || Object.keys(session.cart).length === 0) {
+        return sendWhatsApp(from, "🛒 Cart is empty.\nType *Add <num> <qty>* to add products.");
+      }
+      let msg = "🛒 *Your Cart*\n\n";
+      Object.keys(session.cart).forEach(key => {
+        const p = session.cart[key];
+        msg += `${key}. ${p.name} – Qty: ${p.qty}\n`;
+      });
+      msg += `\nType *Add <num> <qty>*, *Remove <num>* or *Exit* to leave.`;
+      return sendWhatsApp(from, msg);
+    }
+
+    // Add to cart
+    if (input.startsWith("add ")) {
+      const parts = input.split(" ");
+      const num = parts[1];
+      const qty = Number(parts[2] || 1);
+
+      if (!session.products?.[num]) {
+        return sendWhatsApp(from, "Invalid product number.");
+      }
+
+      session.cart[num] = session.cart[num] || { ...session.products[num], qty: 0 };
+      session.cart[num].qty += qty;
+
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, `✅ Added ${qty} x ${session.products[num].name} to cart.`);
+    }
+
+    // Remove from cart
+    if (input.startsWith("remove ")) {
+      const parts = input.split(" ");
+      const num = parts[1];
+      if (!session.cart?.[num]) return sendWhatsApp(from, "Product not in cart.");
+
+      delete session.cart[num];
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, `❌ Removed product ${num} from cart.`);
+    }
+  }
+
+  /* =====================
      FALLBACK
   ===================== */
+  await redisClient.expire(redisKey, SESSION_TTL);
   return sendWhatsApp(
     from,
-    "Invalid option.\nType *List* to see categories.\nType *Exit* to leave."
+    "⚠️ Invalid input.\nType *List* to see categories.\nType *Exit* to leave."
   );
 }
 
