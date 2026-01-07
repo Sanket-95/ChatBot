@@ -150,7 +150,7 @@ async function handleChat(from, text, redisClient) {
     // ALWAYS CHECK SUBCATEGORIES
     const [subRows] = await db.execute(
       `SELECT id, category_name FROM category WHERE parent_id = ?`,
-      [selected.id]
+      [selectedSub.id]
     );
 
     // 👉 Subcategories exist
