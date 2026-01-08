@@ -152,8 +152,8 @@ async function handleChat(from, text, redisClient) {
     });
 
     msg +=
-      `\n👉 Reply with *product number* to add item\n\n` +
-      `Options:\nCart | Back | List | Exit`;
+      `\nReply *product number* to add item\n\n` +
+      `Cart | Back | List | Exit`;
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, msg);
@@ -216,17 +216,63 @@ async function handleChat(from, text, redisClient) {
       });
     }
 
-    msg += "\nOptions:\nBack | List | Exit";
+    msg += "\nType *Order* to place order\nBack | List | Exit";
     return sendWhatsApp(from, msg);
   }
 
   /* =====================
-     BACK
+     PLACE ORDER
   ===================== */
-  if (input === "back" && session) {
-    session.step = "product";
+  if (input === "order") {
+    if (!Object.keys(session.cart).length) {
+      return sendWhatsApp(from, "🛒 Cart is empty.");
+    }
+
+    let msg = "🧾 *Final Order*\n\n";
+    Object.values(session.cart).forEach(p => {
+      msg += `• ${p.name} x${p.qty}\n`;
+    });
+
+    msg += "\nConfirm order? (Yes / No)";
+    session.step = "confirm_order";
+
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, "⬅️ Back\nReply product number.");
+    return sendWhatsApp(from, msg);
+  }
+
+  /* =====================
+     CONFIRM ORDER
+  ===================== */
+  if (session?.step === "confirm_order") {
+    if (input === "yes") {
+      const orderNumber =
+        process.env.AGENCY_ID + "_" + Date.now();
+
+      await db.execute(
+        `INSERT INTO order_master
+         (order_number, status, agency_id, created_at, mob_number, is_sms)
+         VALUES (?, 'pending', ?, ?, ?, 0)`,
+        [
+          orderNumber,
+          process.env.AGENCY_ID,
+          new Date(),
+          session.mobile
+        ]
+      );
+
+      await redisClient.del(redisKey);
+
+      return sendWhatsApp(
+        from,
+        `✅ Order placed successfully!\n\nOrder No: *${orderNumber}*\nThank you 😊`
+      );
+    }
+
+    if (input === "no") {
+      session.step = "product";
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, "❌ Order cancelled.\nBack to products.");
+    }
   }
 
   /* =====================
