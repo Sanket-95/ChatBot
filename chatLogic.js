@@ -181,6 +181,7 @@ async function handleChat(from, text, redisClient) {
     const p = session.pendingProduct;
 
     session.cart[p.id] = session.cart[p.id] || {
+      id: p.id,
       name: p.productname,
       qty: 0
     };
@@ -241,31 +242,62 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     CONFIRM ORDER
+     CONFIRM ORDER (MASTER + SLAVE)
   ===================== */
   if (session?.step === "confirm_order") {
     if (input === "yes") {
       const orderNumber =
         process.env.AGENCY_ID + "_" + Date.now();
 
-      await db.execute(
-        `INSERT INTO order_master
-         (order_number, status, agency_id, created_at, mob_number, is_sms)
-         VALUES (?, 'pending', ?, ?, ?, 0)`,
-        [
-          orderNumber,
-          process.env.AGENCY_ID,
-          new Date(),
-          session.mobile
-        ]
-      );
+      const conn = await db.getConnection();
+      try {
+        await conn.beginTransaction();
 
-      await redisClient.del(redisKey);
+        // order_master
+        await conn.execute(
+          `INSERT INTO order_master
+           (order_number, status, agency_id, created_at, mob_number, is_sms)
+           VALUES (?, 'pending', ?, NOW(), ?, 0)`,
+          [orderNumber, process.env.AGENCY_ID, session.mobile]
+        );
 
-      return sendWhatsApp(
-        from,
-        `✅ Order placed successfully!\n\nOrder No: *${orderNumber}*\nThank you 😊`
-      );
+        // get order_id
+        const [[orderRow]] = await conn.execute(
+          `SELECT id FROM order_master
+           WHERE order_number = ?
+           AND agency_id = ?
+           AND mob_number = ?
+           LIMIT 1`,
+          [orderNumber, process.env.AGENCY_ID, session.mobile]
+        );
+
+        const orderId = orderRow.id;
+
+        // order_slave loop
+        for (const p of Object.values(session.cart)) {
+          await conn.execute(
+            `INSERT INTO order_slave
+             (order_id, prod_id, quantity)
+             VALUES (?, ?, ?)`,
+            [orderId, p.id, p.qty]
+          );
+        }
+
+        await conn.commit();
+        await redisClient.del(redisKey);
+
+        return sendWhatsApp(
+          from,
+          `✅ *Order Placed Successfully!*\n\n🧾 Order No: *${orderNumber}*\nThank you 😊`
+        );
+
+      } catch (err) {
+        await conn.rollback();
+        console.error(err);
+        return sendWhatsApp(from, "❌ Order failed. Please try again.");
+      } finally {
+        conn.release();
+      }
     }
 
     if (input === "no") {
