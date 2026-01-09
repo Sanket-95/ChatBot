@@ -45,12 +45,25 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     GREETING
+     GREETING  (✅ CUSTOMER ID ADDED)
   ===================== */
   if (["hi", "hello", "hey"].includes(input)) {
+
+    // 🔹 FETCH CUSTOMER ID
+    const [[customer]] = await db.execute(
+      `SELECT id AS customer_id
+       FROM customers
+       WHERE contact_numbers LIKE ?
+       LIMIT 1`,
+      [`%${from}%`]
+    );
+
+    const customerId = customer ? customer.customer_id : 0;
+
     session = {
       agency: process.env.AGENCY,
       mobile: from,
+      customer_id: customerId, // ✅ STORED IN REDIS
       createdAt: new Date().toISOString(),
       step: "start",
       cart: {}
@@ -71,7 +84,7 @@ async function handleChat(from, text, redisClient) {
     const [rows] = await db.execute(
       `SELECT id, category_name, parent_id
        FROM category
-       WHERE parent_id = 0 AND is_prod_present =1
+       WHERE parent_id = 0 AND is_prod_present = 1
        AND id IN (
          SELECT DISTINCT(ct_id)
          FROM agency_categories
@@ -110,7 +123,10 @@ async function handleChat(from, text, redisClient) {
         : session.subcategories[input];
 
     const [subs] = await db.execute(
-      "SELECT id, category_name, parent_id FROM category WHERE parent_id = ? AND is_prod_present = 1",
+      `SELECT id, category_name, parent_id
+       FROM category
+       WHERE parent_id = ?
+       AND is_prod_present = 1`,
       [selected.id]
     );
 
@@ -151,9 +167,7 @@ async function handleChat(from, text, redisClient) {
       msg += `${i + 1}. ${p.productname} – ₹${p.mrp}\n`;
     });
 
-    msg +=
-      `\nReply *product number* to add item\n\n` +
-      `Cart | Back | List | Exit`;
+    msg += `\nReply *product number* to add item\n\nCart | Back | List | Exit`;
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, msg);
@@ -195,9 +209,7 @@ async function handleChat(from, text, redisClient) {
       msg += `• ${i.name} x${i.qty}\n`;
     });
 
-    msg +=
-      `\nReply product number to add more\n` +
-      `Cart | Back | List | Exit`;
+    msg += `\nReply product number to add more\nCart | Back | List | Exit`;
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, msg);
@@ -253,15 +265,19 @@ async function handleChat(from, text, redisClient) {
       try {
         await conn.beginTransaction();
 
-        // order_master
+        // ✅ order_master WITH customer_id
         await conn.execute(
           `INSERT INTO order_master
-           (order_number, status, agency_id, created_at, mob_number, is_sms)
-           VALUES (?, 'pending', ?, NOW(), ?, 0)`,
-          [orderNumber, process.env.AGENCY_ID, session.mobile]
+           (order_number, status, agency_id, customer_id, created_at, mob_number, is_sms)
+           VALUES (?, 'pending', ?, ?, NOW(), ?, 0)`,
+          [
+            orderNumber,
+            process.env.AGENCY_ID,
+            session.customer_id || 0, // ✅ USED HERE
+            session.mobile
+          ]
         );
 
-        // get order_id
         const [[orderRow]] = await conn.execute(
           `SELECT id FROM order_master
            WHERE order_number = ?
@@ -273,7 +289,6 @@ async function handleChat(from, text, redisClient) {
 
         const orderId = orderRow.id;
 
-        // order_slave loop
         for (const p of Object.values(session.cart)) {
           await conn.execute(
             `INSERT INTO order_slave
