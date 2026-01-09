@@ -51,7 +51,7 @@ async function handleChat(from, text, redisClient) {
 
     // 🔹 FETCH CUSTOMER ID
     const [[customer]] = await db.execute(
-      `SELECT id AS customer_id
+      `SELECT id AS customer_id,cust_tier_id
        FROM customers
        WHERE contact_numbers LIKE ?
        LIMIT 1`,
@@ -59,11 +59,13 @@ async function handleChat(from, text, redisClient) {
     );
 
     const customerId = customer ? customer.customer_id : 0;
+    const custTierId = customer ? customer.cust_tier_id : null; // null if not found
 
     session = {
       agency: process.env.AGENCY,
       mobile: from,
       customer_id: customerId, // ✅ STORED IN REDIS
+      cust_tier_id: custTierId,   // ✅ STORED IN REDIS
       createdAt: new Date().toISOString(),
       step: "start",
       cart: {}
