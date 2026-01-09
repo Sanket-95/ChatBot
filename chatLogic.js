@@ -71,7 +71,7 @@ async function handleChat(from, text, redisClient) {
     const [rows] = await db.execute(
       `SELECT id, category_name, parent_id
        FROM category
-       WHERE parent_id = 0
+       WHERE parent_id = 0 AND is_prod_present =1
        AND id IN (
          SELECT DISTINCT(ct_id)
          FROM agency_categories
@@ -110,7 +110,7 @@ async function handleChat(from, text, redisClient) {
         : session.subcategories[input];
 
     const [subs] = await db.execute(
-      "SELECT id, category_name, parent_id FROM category WHERE parent_id = ?",
+      "SELECT id, category_name, parent_id FROM category WHERE parent_id = ? AND is_prod_present = 1",
       [selected.id]
     );
 
