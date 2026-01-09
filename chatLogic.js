@@ -49,7 +49,7 @@ async function handleChat(from, text, redisClient) {
   ===================== */
   if (["hi", "hello", "hey"].includes(input)) {
     const [[customer]] = await db.execute(
-      `SELECT id AS customer_id
+      `SELECT id AS customer_id,cust_tier_id AS tier_id
        FROM customers
        WHERE contact_numbers LIKE ?
        LIMIT 1`,
