@@ -47,7 +47,7 @@ async function handleChat(from, text, redisClient) {
   /* =====================
      BACK – REVERSE NAVIGATION
   ===================== */
-  if (input === "back" && session?.current_parent_id) {
+  if (input === "back" && session?.current_parent_id !== undefined) {
     // 1️⃣ Get current category record
     const [[currentCategory]] = await db.execute(
       `SELECT id, parent_id, category_name
@@ -74,15 +74,24 @@ async function handleChat(from, text, redisClient) {
 
     // 3️⃣ Update session
     session.current_parent_id = currentCategory.parent_id; // move one level up
-    session.subcategories = null;
     session.products = null;
-    session.step = currentCategory.parent_id === 0 ? "category" : "subcategory";
+
+    if (currentCategory.parent_id === 0) {
+      session.step = "category";
+      session.categories = {};
+      rows.forEach((r, i) => session.categories[i + 1] = r);
+      session.subcategories = null;
+    } else {
+      session.step = "subcategory";
+      session.subcategories = {};
+      rows.forEach((r, i) => session.subcategories[i + 1] = r);
+      session.categories = session.categories || {};
+    }
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
     // 4️⃣ Prepare label
-    const label =
-      currentCategory.parent_id === 0 ? "*Category List*" : "*Sub Category List*";
+    const label = currentCategory.parent_id === 0 ? "*Category List*" : "*Sub Category List*";
 
     // 5️⃣ Send WhatsApp list
     let msg = `${label}\n\n`;
