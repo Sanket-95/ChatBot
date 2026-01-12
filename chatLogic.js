@@ -4,7 +4,7 @@ const db = require("./db");
 const SESSION_TTL = Number(process.env.SESSION_TTL || 1800);
 
 /* =====================
-   SEND WHATSAPP
+   SEND WHATSAPP TEXT
 ===================== */
 async function sendWhatsApp(to, text) {
   await axios.post(
@@ -25,13 +25,56 @@ async function sendWhatsApp(to, text) {
 }
 
 /* =====================
+   SEND WHATSAPP BUTTONS
+===================== */
+async function sendWhatsAppButtons(to, bodyText, buttons) {
+  await axios.post(
+    `https://graph.facebook.com/v22.0/${process.env.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.map(b => ({
+            type: "reply",
+            reply: {
+              id: b.id,
+              title: b.title
+            }
+          }))
+        }
+      }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
+
+/* =====================
    CHAT HANDLER
 ===================== */
-async function handleChat(from, text, redisClient) {
-  const inputRaw = text?.trim();
-  if (!inputRaw) return;
+async function handleChat(from, text, redisClient, interactive) {
 
+  /* =====================
+     INPUT NORMALIZATION
+     (TEXT OR BUTTON)
+  ===================== */
+  let inputRaw = text?.trim();
+
+  if (interactive?.button_reply?.id) {
+    inputRaw = interactive.button_reply.id;
+  }
+
+  if (!inputRaw) return;
   const input = inputRaw.toLowerCase();
+
   const redisKey = `session:${process.env.AGENCY}:${from}`;
   const existing = await redisClient.get(redisKey);
   let session = existing ? JSON.parse(existing) : null;
@@ -48,7 +91,7 @@ async function handleChat(from, text, redisClient) {
      BACK – REVERSE NAVIGATION
   ===================== */
   if (input === "back" && session?.current_parent_id !== undefined) {
-    // 1️⃣ Get current category record
+
     const [[currentCategory]] = await db.execute(
       `SELECT id, parent_id, category_name
        FROM category
@@ -57,10 +100,12 @@ async function handleChat(from, text, redisClient) {
     );
 
     if (!currentCategory) {
-      return sendWhatsApp(from, "Type *List* to see categories.");
+      return sendWhatsAppButtons(from, "Type List to see categories.", [
+        { id: "list", title: "📋 List" },
+        { id: "exit", title: "❌ Exit" }
+      ]);
     }
 
-    // 2️⃣ Fetch list under the parent of current category
     const [rows] = await db.execute(
       `SELECT id, parent_id, category_name
        FROM category
@@ -68,39 +113,34 @@ async function handleChat(from, text, redisClient) {
       [currentCategory.parent_id]
     );
 
-    if (!rows.length) {
-      return sendWhatsApp(from, "No previous category available.");
-    }
-
-    // 3️⃣ Update session
-    session.current_parent_id = currentCategory.parent_id; // move one level up
+    session.current_parent_id = currentCategory.parent_id;
     session.products = null;
 
+    let msg = "";
     if (currentCategory.parent_id === 0) {
       session.step = "category";
       session.categories = {};
       rows.forEach((r, i) => session.categories[i + 1] = r);
       session.subcategories = null;
+      msg = "📦 *Categories*\n\n";
     } else {
       session.step = "subcategory";
       session.subcategories = {};
       rows.forEach((r, i) => session.subcategories[i + 1] = r);
-      session.categories = session.categories || {};
+      msg = "📂 *Sub Category List*\n\n";
     }
 
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-
-    // 4️⃣ Prepare label
-    const label = currentCategory.parent_id === 0 ? "*Category List*" : "*Sub Category List*";
-
-    // 5️⃣ Send WhatsApp list
-    let msg = `${label}\n\n`;
     rows.forEach((r, i) => {
       msg += `${i + 1}. ${r.category_name}\n`;
     });
-    msg += `\nType number to select\nType *back* to go previous`;
 
-    return sendWhatsApp(from, msg);
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+
+    return sendWhatsAppButtons(from, msg, [
+      { id: "back", title: "⬅ Back" },
+      { id: "list", title: "📋 List" },
+      { id: "exit", title: "❌ Exit" }
+    ]);
   }
 
   /* =====================
@@ -124,14 +164,18 @@ async function handleChat(from, text, redisClient) {
       createdAt: new Date().toISOString(),
       step: "start",
       cart: {},
-      current_parent_id: 0 // initialize for back navigation
+      current_parent_id: 0
     };
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
-    return sendWhatsApp(
+    return sendWhatsAppButtons(
       from,
-      `Welcome to *${process.env.AGENCY}* 👋\n\nType *List* to see categories.\nType *Exit* to leave.`
+      `Welcome to *${process.env.AGENCY}* 👋`,
+      [
+        { id: "list", title: "📦 List Categories" },
+        { id: "exit", title: "❌ Exit" }
+      ]
     );
   }
 
@@ -164,10 +208,11 @@ async function handleChat(from, text, redisClient) {
       msg += `${i + 1}. ${r.category_name}\n`;
     });
 
-    msg += "\nType category number.\nExit";
-
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, msg);
+
+    return sendWhatsAppButtons(from, msg, [
+      { id: "exit", title: "❌ Exit" }
+    ]);
   }
 
   /* =====================
@@ -182,7 +227,7 @@ async function handleChat(from, text, redisClient) {
         ? session.categories[input]
         : session.subcategories[input];
 
-    session.current_parent_id = selected.id; // update current_parent_id
+    session.current_parent_id = selected.id;
 
     const [subs] = await db.execute(
       `SELECT id, category_name, parent_id
@@ -201,10 +246,12 @@ async function handleChat(from, text, redisClient) {
         msg += `${i + 1}. ${r.category_name}\n`;
       });
 
-      msg += "\nType number.\nBack | Exit";
-
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      return sendWhatsApp(from, msg);
+
+      return sendWhatsAppButtons(from, msg, [
+        { id: "back", title: "⬅ Back" },
+        { id: "exit", title: "❌ Exit" }
+      ]);
     }
 
     /* =====================
@@ -248,10 +295,14 @@ async function handleChat(from, text, redisClient) {
       }\n`;
     });
 
-    msg += "\nReply product number to add item\nCart | Back | List | Exit";
-
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, msg);
+
+    return sendWhatsAppButtons(from, msg, [
+      { id: "cart", title: "🛒 Cart" },
+      { id: "back", title: "⬅ Back" },
+      { id: "list", title: "📋 List" },
+      { id: "exit", title: "❌ Exit" }
+    ]);
   }
 
   /* =====================
@@ -262,9 +313,14 @@ async function handleChat(from, text, redisClient) {
     session.step = "qty";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(
+
+    return sendWhatsAppButtons(
       from,
-      `How many *${session.pendingProduct.productname}*?\nReply with quantity.\nBack | Exit`
+      `How many *${session.pendingProduct.productname}*?`,
+      [
+        { id: "back", title: "⬅ Back" },
+        { id: "exit", title: "❌ Exit" }
+      ]
     );
   }
 
@@ -290,10 +346,14 @@ async function handleChat(from, text, redisClient) {
       msg += `• ${i.name} x${i.qty}\n`;
     });
 
-    msg += "\nReply product number to add more\nCart | Back | List | Exit";
-
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, msg);
+
+    return sendWhatsAppButtons(from, msg, [
+      { id: "cart", title: "🛒 Cart" },
+      { id: "back", title: "⬅ Back" },
+      { id: "list", title: "📋 List" },
+      { id: "exit", title: "❌ Exit" }
+    ]);
   }
 
   /* =====================
@@ -310,8 +370,12 @@ async function handleChat(from, text, redisClient) {
       });
     }
 
-    msg += "\nType *Order* to place order\nBack | List | Exit";
-    return sendWhatsApp(from, msg);
+    return sendWhatsAppButtons(from, msg, [
+      { id: "order", title: "✅ Order" },
+      { id: "back", title: "⬅ Back" },
+      { id: "list", title: "📋 List" },
+      { id: "exit", title: "❌ Exit" }
+    ]);
   }
 
   /* =====================
@@ -327,11 +391,13 @@ async function handleChat(from, text, redisClient) {
       msg += `• ${p.name} x${p.qty}\n`;
     });
 
-    msg += "\nConfirm order? (Yes / No)";
     session.step = "confirm_order";
-
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, msg);
+
+    return sendWhatsAppButtons(from, msg, [
+      { id: "yes", title: "✅ Yes" },
+      { id: "no", title: "❌ No" }
+    ]);
   }
 
   /* =====================
@@ -377,8 +443,7 @@ async function handleChat(from, text, redisClient) {
         await conn.commit();
         await redisClient.del(redisKey);
 
-        return sendWhatsApp(
-          from,
+        return sendWhatsApp(from,
           `✅ *Order Placed Successfully!*\n\n🧾 Order No: *${orderNumber}*`
         );
       } catch (err) {
@@ -393,7 +458,10 @@ async function handleChat(from, text, redisClient) {
     if (input === "no") {
       session.step = "product";
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      return sendWhatsApp(from, "❌ Order cancelled.\nBack to products.");
+      return sendWhatsAppButtons(from, "❌ Order cancelled.", [
+        { id: "back", title: "⬅ Back" },
+        { id: "exit", title: "❌ Exit" }
+      ]);
     }
   }
 
@@ -401,7 +469,10 @@ async function handleChat(from, text, redisClient) {
      FALLBACK
   ===================== */
   await redisClient.expire(redisKey, SESSION_TTL);
-  return sendWhatsApp(from, "Invalid input.\nList | Exit");
+  return sendWhatsAppButtons(from, "Invalid input.", [
+    { id: "list", title: "📋 List" },
+    { id: "exit", title: "❌ Exit" }
+  ]);
 }
 
 module.exports = { handleChat };
