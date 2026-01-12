@@ -4,16 +4,15 @@ const db = require("./db");
 const SESSION_TTL = Number(process.env.SESSION_TTL || 1800);
 
 /* =====================
-   SEND WHATSAPP TEXT
+   SEND WHATSAPP
 ===================== */
-async function sendWhatsApp(to, text) {
+async function sendWhatsApp(to, payload) {
   await axios.post(
     `https://graph.facebook.com/v22.0/${process.env.PHONE_NUMBER_ID}/messages`,
     {
       messaging_product: "whatsapp",
       to,
-      type: "text",
-      text: { body: text }
+      ...payload
     },
     {
       headers: {
@@ -25,55 +24,66 @@ async function sendWhatsApp(to, text) {
 }
 
 /* =====================
-   SEND WHATSAPP BUTTONS
+   BUTTON BUILDERS
 ===================== */
-async function sendWhatsAppButtons(to, bodyText, buttons) {
-  await axios.post(
-    `https://graph.facebook.com/v22.0/${process.env.PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: bodyText },
-        action: {
-          buttons: buttons.map(b => ({
-            type: "reply",
-            reply: {
-              id: b.id,
-              title: b.title
-            }
-          }))
-        }
-      }
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json"
+function mainButtons() {
+  return {
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: "Choose an option" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "list", title: "📦 List Categories" } },
+          { type: "reply", reply: { id: "exit", title: "❌ Exit" } }
+        ]
       }
     }
-  );
+  };
+}
+
+function navButtons(extra = []) {
+  return {
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: "Choose an option" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "back", title: "⬅ Back" } },
+          ...extra,
+          { type: "reply", reply: { id: "exit", title: "❌ Exit" } }
+        ]
+      }
+    }
+  };
+}
+
+/* =====================
+   NORMALIZE INPUT
+===================== */
+function normalizeInput(message) {
+  if (!message) return "";
+
+  if (message.type === "text") {
+    return message.text.body.trim().toLowerCase();
+  }
+
+  if (message.type === "interactive") {
+    if (message.interactive.type === "button_reply") {
+      return message.interactive.button_reply.id.toLowerCase();
+    }
+  }
+
+  return "";
 }
 
 /* =====================
    CHAT HANDLER
 ===================== */
-async function handleChat(from, text, redisClient, interactive) {
-
-  /* =====================
-     INPUT NORMALIZATION
-     (TEXT OR BUTTON)
-  ===================== */
-  let inputRaw = text?.trim();
-
-  if (interactive?.button_reply?.id) {
-    inputRaw = interactive.button_reply.id;
-  }
-
-  if (!inputRaw) return;
-  const input = inputRaw.toLowerCase();
+async function handleChat(from, message, redisClient) {
+  const input = normalizeInput(message);
+  if (!input) return;
 
   const redisKey = `session:${process.env.AGENCY}:${from}`;
   const existing = await redisClient.get(redisKey);
@@ -84,14 +94,16 @@ async function handleChat(from, text, redisClient, interactive) {
   ===================== */
   if (input === "exit") {
     await redisClient.del(redisKey);
-    return sendWhatsApp(from, "Session ended.\nType *Hi* to start again.");
+    return sendWhatsApp(from, {
+      type: "text",
+      text: { body: "Session ended.\nType *Hi* to start again." }
+    });
   }
 
   /* =====================
      BACK – REVERSE NAVIGATION
   ===================== */
   if (input === "back" && session?.current_parent_id !== undefined) {
-
     const [[currentCategory]] = await db.execute(
       `SELECT id, parent_id, category_name
        FROM category
@@ -100,10 +112,10 @@ async function handleChat(from, text, redisClient, interactive) {
     );
 
     if (!currentCategory) {
-      return sendWhatsAppButtons(from, "Type List to see categories.", [
-        { id: "list", title: "📋 List" },
-        { id: "exit", title: "❌ Exit" }
-      ]);
+      return sendWhatsApp(from, {
+        type: "text",
+        text: { body: "Type *List* to see categories." }
+      });
     }
 
     const [rows] = await db.execute(
@@ -116,38 +128,35 @@ async function handleChat(from, text, redisClient, interactive) {
     session.current_parent_id = currentCategory.parent_id;
     session.products = null;
 
-    let msg = "";
     if (currentCategory.parent_id === 0) {
       session.step = "category";
       session.categories = {};
-      rows.forEach((r, i) => session.categories[i + 1] = r);
+      rows.forEach((r, i) => (session.categories[i + 1] = r));
       session.subcategories = null;
-      msg = "📦 *Categories*\n\n";
     } else {
       session.step = "subcategory";
       session.subcategories = {};
-      rows.forEach((r, i) => session.subcategories[i + 1] = r);
-      msg = "📂 *Sub Category List*\n\n";
+      rows.forEach((r, i) => (session.subcategories[i + 1] = r));
     }
-
-    rows.forEach((r, i) => {
-      msg += `${i + 1}. ${r.category_name}\n`;
-    });
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
-    return sendWhatsAppButtons(from, msg, [
-      { id: "back", title: "⬅ Back" },
-      { id: "list", title: "📋 List" },
-      { id: "exit", title: "❌ Exit" }
-    ]);
+    let msg =
+      currentCategory.parent_id === 0
+        ? "*Category List*\n\n"
+        : "*Sub Category List*\n\n";
+
+    rows.forEach((r, i) => (msg += `${i + 1}. ${r.category_name}\n`));
+    msg += "\nType number to select";
+
+    await sendWhatsApp(from, { type: "text", text: { body: msg } });
+    return sendWhatsApp(from, navButtons());
   }
 
   /* =====================
      GREETING
   ===================== */
   if (["hi", "hello", "hey"].includes(input)) {
-
     const [[customer]] = await db.execute(
       `SELECT id AS customer_id, cust_tier_id
        FROM customers
@@ -169,14 +178,14 @@ async function handleChat(from, text, redisClient, interactive) {
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
-    return sendWhatsAppButtons(
-      from,
-      `Welcome to *${process.env.AGENCY}* 👋`,
-      [
-        { id: "list", title: "📦 List Categories" },
-        { id: "exit", title: "❌ Exit" }
-      ]
-    );
+    await sendWhatsApp(from, {
+      type: "text",
+      text: {
+        body: `Welcome to *${process.env.AGENCY}* 👋`
+      }
+    });
+
+    return sendWhatsApp(from, mainButtons());
   }
 
   /* =====================
@@ -209,13 +218,11 @@ async function handleChat(from, text, redisClient, interactive) {
     });
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-
-    return sendWhatsAppButtons(from, msg, [
-      { id: "exit", title: "❌ Exit" }
-    ]);
+    await sendWhatsApp(from, { type: "text", text: { body: msg } });
+    return sendWhatsApp(from, navButtons());
   }
 
-  /* =====================
+/* =====================
      CATEGORY / SUBCATEGORY
   ===================== */
   if (
@@ -227,7 +234,7 @@ async function handleChat(from, text, redisClient, interactive) {
         ? session.categories[input]
         : session.subcategories[input];
 
-    session.current_parent_id = selected.id;
+    session.current_parent_id = selected.id; // update current_parent_id
 
     const [subs] = await db.execute(
       `SELECT id, category_name, parent_id
@@ -246,12 +253,10 @@ async function handleChat(from, text, redisClient, interactive) {
         msg += `${i + 1}. ${r.category_name}\n`;
       });
 
-      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      msg += "\nType number.\nBack | Exit";
 
-      return sendWhatsAppButtons(from, msg, [
-        { id: "back", title: "⬅ Back" },
-        { id: "exit", title: "❌ Exit" }
-      ]);
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, msg);
     }
 
     /* =====================
@@ -295,14 +300,10 @@ async function handleChat(from, text, redisClient, interactive) {
       }\n`;
     });
 
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    msg += "\nReply product number to add item\nCart | Back | List | Exit";
 
-    return sendWhatsAppButtons(from, msg, [
-      { id: "cart", title: "🛒 Cart" },
-      { id: "back", title: "⬅ Back" },
-      { id: "list", title: "📋 List" },
-      { id: "exit", title: "❌ Exit" }
-    ]);
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg);
   }
 
   /* =====================
@@ -313,14 +314,9 @@ async function handleChat(from, text, redisClient, interactive) {
     session.step = "qty";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-
-    return sendWhatsAppButtons(
+    return sendWhatsApp(
       from,
-      `How many *${session.pendingProduct.productname}*?`,
-      [
-        { id: "back", title: "⬅ Back" },
-        { id: "exit", title: "❌ Exit" }
-      ]
+      `How many *${session.pendingProduct.productname}*?\nReply with quantity.\nBack | Exit`
     );
   }
 
@@ -346,14 +342,10 @@ async function handleChat(from, text, redisClient, interactive) {
       msg += `• ${i.name} x${i.qty}\n`;
     });
 
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    msg += "\nReply product number to add more\nCart | Back | List | Exit";
 
-    return sendWhatsAppButtons(from, msg, [
-      { id: "cart", title: "🛒 Cart" },
-      { id: "back", title: "⬅ Back" },
-      { id: "list", title: "📋 List" },
-      { id: "exit", title: "❌ Exit" }
-    ]);
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg);
   }
 
   /* =====================
@@ -370,12 +362,8 @@ async function handleChat(from, text, redisClient, interactive) {
       });
     }
 
-    return sendWhatsAppButtons(from, msg, [
-      { id: "order", title: "✅ Order" },
-      { id: "back", title: "⬅ Back" },
-      { id: "list", title: "📋 List" },
-      { id: "exit", title: "❌ Exit" }
-    ]);
+    msg += "\nType *Order* to place order\nBack | List | Exit";
+    return sendWhatsApp(from, msg);
   }
 
   /* =====================
@@ -391,13 +379,11 @@ async function handleChat(from, text, redisClient, interactive) {
       msg += `• ${p.name} x${p.qty}\n`;
     });
 
+    msg += "\nConfirm order? (Yes / No)";
     session.step = "confirm_order";
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
-    return sendWhatsAppButtons(from, msg, [
-      { id: "yes", title: "✅ Yes" },
-      { id: "no", title: "❌ No" }
-    ]);
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg);
   }
 
   /* =====================
@@ -443,7 +429,8 @@ async function handleChat(from, text, redisClient, interactive) {
         await conn.commit();
         await redisClient.del(redisKey);
 
-        return sendWhatsApp(from,
+        return sendWhatsApp(
+          from,
           `✅ *Order Placed Successfully!*\n\n🧾 Order No: *${orderNumber}*`
         );
       } catch (err) {
@@ -458,10 +445,7 @@ async function handleChat(from, text, redisClient, interactive) {
     if (input === "no") {
       session.step = "product";
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      return sendWhatsAppButtons(from, "❌ Order cancelled.", [
-        { id: "back", title: "⬅ Back" },
-        { id: "exit", title: "❌ Exit" }
-      ]);
+      return sendWhatsApp(from, "❌ Order cancelled.\nBack to products.");
     }
   }
 
@@ -469,10 +453,10 @@ async function handleChat(from, text, redisClient, interactive) {
      FALLBACK
   ===================== */
   await redisClient.expire(redisKey, SESSION_TTL);
-  return sendWhatsAppButtons(from, "Invalid input.", [
-    { id: "list", title: "📋 List" },
-    { id: "exit", title: "❌ Exit" }
-  ]);
+  return sendWhatsApp(from, {
+    type: "text",
+    text: { body: "Invalid input.\nList | Exit" }
+  });
 }
 
 module.exports = { handleChat };
