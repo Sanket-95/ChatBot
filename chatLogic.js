@@ -1,4 +1,4 @@
-// Back option implemented using parent_id – FULL FILE
+// Full WhatsApp bot code with correct BACK logic
 const axios = require("axios");
 const db = require("./db");
 
@@ -46,92 +46,64 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     BACK (NEW)
+     BACK
   ===================== */
   if (input === "back" && session) {
-    let parentId = null;
+    const currentParentId = session.current_parent_id;
 
-    // From subcategory screen
-    if (session.step === "subcategory" && session.subcategories) {
-      const first = Object.values(session.subcategories)[0];
-      parentId = first?.parent_id;
-    }
-
-    // From product screen
-    if (session.step === "product" && session.last_category_id) {
-      parentId = session.last_category_id;
-    }
-
-    if (!parentId) {
+    if (!currentParentId) {
       return sendWhatsApp(from, "Type *List* to see categories.");
     }
 
-    const [[cat]] = await db.execute(
+    // Fetch current category using id = current_present_parent_id
+    const [[currentCategory]] = await db.execute(
       `SELECT id, parent_id, category_name
        FROM category
        WHERE id = ?
-       AND is_prod_present = 1`,
-      [parentId]
+         AND is_prod_present = 1`,
+      [currentParentId]
     );
 
-    if (!cat) {
+    if (!currentCategory) {
       return sendWhatsApp(from, "Type *List* to see categories.");
     }
 
-    // ===== MAIN CATEGORY =====
-    if (cat.parent_id === 0) {
-      const [rows] = await db.execute(
-        `SELECT id, category_name, parent_id
-         FROM category
-         WHERE parent_id = 0
-         AND is_prod_present = 1
-         AND id IN (
-           SELECT DISTINCT ct_id
-           FROM agency_categories
-           WHERE ag_id = ?
-         )`,
-        [process.env.AGENCY_ID]
-      );
+    // previous level parent id
+    const previousParentId = currentCategory.parent_id ?? 0;
 
-      session.categories = {};
-      session.subcategories = null;
-      session.products = null;
-      session.step = "category";
-
-      let msg = "📦 *Categories*\n\n";
-      rows.forEach((r, i) => {
-        session.categories[i + 1] = r;
-        msg += `${i + 1}. ${r.category_name}\n`;
-      });
-
-      msg += "\nType category number.\nExit";
-
-      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      return sendWhatsApp(from, msg);
-    }
-
-    // ===== SUB CATEGORY =====
-    const [subs] = await db.execute(
-      `SELECT id, category_name, parent_id
+    // Fetch list under previous parent
+    const [rows] = await db.execute(
+      `SELECT id, parent_id, category_name
        FROM category
        WHERE parent_id = ?
-       AND is_prod_present = 1`,
-      [cat.id]
+         AND is_prod_present = 1`,
+      [previousParentId]
     );
 
-    session.subcategories = {};
+    if (!rows.length) {
+      return sendWhatsApp(from, "No previous category available.");
+    }
+
+    // Update session
+    session.current_parent_id = previousParentId;
+    session.step = previousParentId === 0 ? "category" : "subcategory";
+
+    // Clear subcategories/products if going back
+    session.subcategories = null;
     session.products = null;
-    session.step = "subcategory";
-
-    let msg = `📂 *${cat.category_name} – Subcategories*\n\n`;
-    subs.forEach((r, i) => {
-      session.subcategories[i + 1] = r;
-      msg += `${i + 1}. ${r.category_name}\n`;
-    });
-
-    msg += "\nType number.\nBack | Exit";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+
+    // Label logic
+    const label =
+      previousParentId === 0 ? "*Category List*" : "*Sub Category List*";
+
+    let msg = `${label}\n\n`;
+    rows.forEach((r, i) => {
+      msg += `${i + 1}. ${r.category_name}\n`;
+    });
+    msg += `\nType number to select\nType *back* to go previous`;
+
     return sendWhatsApp(from, msg);
   }
 
@@ -155,7 +127,8 @@ async function handleChat(from, text, redisClient) {
       cust_tier_id: customer ? customer.cust_tier_id : null,
       createdAt: new Date().toISOString(),
       step: "start",
-      cart: {}
+      cart: {},
+      current_parent_id: 0 // initialize for back navigation
     };
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
@@ -174,12 +147,12 @@ async function handleChat(from, text, redisClient) {
       `SELECT id, category_name, parent_id
        FROM category
        WHERE parent_id = 0
-       AND is_prod_present = 1
-       AND id IN (
-         SELECT DISTINCT ct_id
-         FROM agency_categories
-         WHERE ag_id = ?
-       )`,
+         AND is_prod_present = 1
+         AND id IN (
+           SELECT DISTINCT ct_id
+           FROM agency_categories
+           WHERE ag_id = ?
+         )`,
       [process.env.AGENCY_ID]
     );
 
@@ -187,6 +160,7 @@ async function handleChat(from, text, redisClient) {
     session.subcategories = null;
     session.products = null;
     session.step = "category";
+    session.current_parent_id = 0;
 
     let msg = "📦 *Categories*\n\n";
     rows.forEach((r, i) => {
@@ -212,13 +186,13 @@ async function handleChat(from, text, redisClient) {
         ? session.categories[input]
         : session.subcategories[input];
 
-    session.last_category_id = selected.id;
+    session.current_parent_id = selected.id;
 
     const [subs] = await db.execute(
       `SELECT id, category_name, parent_id
        FROM category
        WHERE parent_id = ?
-       AND is_prod_present = 1`,
+         AND is_prod_present = 1`,
       [selected.id]
     );
 
