@@ -81,7 +81,7 @@ async function handleChat(from, text, redisClient) {
   ===================== */
   if (input === "list") {
     const [rows] = await db.execute(
-      `SELECT id, category_name
+      `SELECT id, category_name, parent_id
        FROM category
        WHERE parent_id = 0
        AND is_prod_present = 1
@@ -100,7 +100,7 @@ async function handleChat(from, text, redisClient) {
 
     let msg = "📦 *Categories*\n\n";
     rows.forEach((r, i) => {
-      session.categories[i + 1] = r;
+      session.categories[i + 1] = r; // parent_id now stored automatically
       msg += `${i + 1}. ${r.category_name}\n`;
     });
 
@@ -123,7 +123,7 @@ async function handleChat(from, text, redisClient) {
         : session.subcategories[input];
 
     const [subs] = await db.execute(
-      `SELECT id, category_name
+      `SELECT id, category_name, parent_id
        FROM category
        WHERE parent_id = ?
        AND is_prod_present = 1`,
@@ -136,7 +136,7 @@ async function handleChat(from, text, redisClient) {
 
       let msg = `📂 *${selected.category_name} – Subcategories*\n\n`;
       subs.forEach((r, i) => {
-        session.subcategories[i + 1] = r;
+        session.subcategories[i + 1] = r; // parent_id stored
         msg += `${i + 1}. ${r.category_name}\n`;
       });
 
@@ -187,7 +187,6 @@ async function handleChat(from, text, redisClient) {
       if (p.scheme_name) {
         line += ` 🎁 *${p.scheme_name}*`;
       }
-
       msg += line + "\n";
     });
 
