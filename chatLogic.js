@@ -4,15 +4,33 @@ const db = require("./db");
 const SESSION_TTL = Number(process.env.SESSION_TTL || 1800);
 
 /* =====================
+   INPUT NORMALIZER (BUTTON + TEXT)
+===================== */
+function normalizeInput(text = "") {
+  const cleaned = text.replace(/[^\w\s]/gi, "").trim().toLowerCase();
+
+  if (cleaned.includes("list")) return "list";
+  if (cleaned.includes("exit")) return "exit";
+  if (cleaned.includes("back")) return "back";
+  if (cleaned.includes("cart")) return "cart";
+  if (cleaned.includes("order")) return "order";
+  if (cleaned === "yes") return "yes";
+  if (cleaned === "no") return "no";
+
+  return cleaned; // numbers remain numbers
+}
+
+/* =====================
    SEND WHATSAPP
 ===================== */
-async function sendWhatsApp(to, payload) {
+async function sendWhatsApp(to, text) {
   await axios.post(
     `https://graph.facebook.com/v22.0/${process.env.PHONE_NUMBER_ID}/messages`,
     {
       messaging_product: "whatsapp",
       to,
-      ...payload
+      type: "text",
+      text: { body: text }
     },
     {
       headers: {
@@ -24,66 +42,14 @@ async function sendWhatsApp(to, payload) {
 }
 
 /* =====================
-   BUTTON BUILDERS
-===================== */
-function mainButtons() {
-  return {
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: { text: "Choose an option" },
-      action: {
-        buttons: [
-          { type: "reply", reply: { id: "list", title: "📦 List Categories" } },
-          { type: "reply", reply: { id: "exit", title: "❌ Exit" } }
-        ]
-      }
-    }
-  };
-}
-
-function navButtons(extra = []) {
-  return {
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: { text: "Choose an option" },
-      action: {
-        buttons: [
-          { type: "reply", reply: { id: "back", title: "⬅ Back" } },
-          ...extra,
-          { type: "reply", reply: { id: "exit", title: "❌ Exit" } }
-        ]
-      }
-    }
-  };
-}
-
-/* =====================
-   NORMALIZE INPUT
-===================== */
-function normalizeInput(message) {
-  if (!message) return "";
-
-  if (message.type === "text") {
-    return message.text.body.trim().toLowerCase();
-  }
-
-  if (message.type === "interactive") {
-    if (message.interactive.type === "button_reply") {
-      return message.interactive.button_reply.id.toLowerCase();
-    }
-  }
-
-  return "";
-}
-
-/* =====================
    CHAT HANDLER
 ===================== */
-async function handleChat(from, message, redisClient) {
-  const input = normalizeInput(message);
-  if (!input) return;
+async function handleChat(from, text, redisClient) {
+  const inputRaw = text?.trim();
+  if (!inputRaw) return;
+
+  // 🔥 ONLY THIS LINE CHANGED
+  const input = normalizeInput(inputRaw);
 
   const redisKey = `session:${process.env.AGENCY}:${from}`;
   const existing = await redisClient.get(redisKey);
@@ -94,10 +60,7 @@ async function handleChat(from, message, redisClient) {
   ===================== */
   if (input === "exit") {
     await redisClient.del(redisKey);
-    return sendWhatsApp(from, {
-      type: "text",
-      text: { body: "Session ended.\nType *Hi* to start again." }
-    });
+    return sendWhatsApp(from, "Session ended.\nType *Hi* to start again.");
   }
 
   /* =====================
@@ -112,10 +75,7 @@ async function handleChat(from, message, redisClient) {
     );
 
     if (!currentCategory) {
-      return sendWhatsApp(from, {
-        type: "text",
-        text: { body: "Type *List* to see categories." }
-      });
+      return sendWhatsApp(from, "Type *List* to see categories.");
     }
 
     const [rows] = await db.execute(
@@ -124,6 +84,10 @@ async function handleChat(from, message, redisClient) {
        WHERE parent_id = ? AND is_prod_present = 1`,
       [currentCategory.parent_id]
     );
+
+    if (!rows.length) {
+      return sendWhatsApp(from, "No previous category available.");
+    }
 
     session.current_parent_id = currentCategory.parent_id;
     session.products = null;
@@ -147,10 +111,9 @@ async function handleChat(from, message, redisClient) {
         : "*Sub Category List*\n\n";
 
     rows.forEach((r, i) => (msg += `${i + 1}. ${r.category_name}\n`));
-    msg += "\nType number to select";
+    msg += "\nType number to select\nType *back* to go previous";
 
-    await sendWhatsApp(from, { type: "text", text: { body: msg } });
-    return sendWhatsApp(from, navButtons());
+    return sendWhatsApp(from, msg);
   }
 
   /* =====================
@@ -178,14 +141,10 @@ async function handleChat(from, message, redisClient) {
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
-    await sendWhatsApp(from, {
-      type: "text",
-      text: {
-        body: `Welcome to *${process.env.AGENCY}* 👋`
-      }
-    });
-
-    return sendWhatsApp(from, mainButtons());
+    return sendWhatsApp(
+      from,
+      `Welcome to *${process.env.AGENCY}* 👋\n\nType *List* to see categories.\nType *Exit* to leave.`
+    );
   }
 
   /* =====================
@@ -217,9 +176,10 @@ async function handleChat(from, message, redisClient) {
       msg += `${i + 1}. ${r.category_name}\n`;
     });
 
+    msg += "\nType category number.\nExit";
+
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    await sendWhatsApp(from, { type: "text", text: { body: msg } });
-    return sendWhatsApp(from, navButtons());
+    return sendWhatsApp(from, msg);
   }
 
 /* =====================
@@ -453,10 +413,7 @@ async function handleChat(from, message, redisClient) {
      FALLBACK
   ===================== */
   await redisClient.expire(redisKey, SESSION_TTL);
-  return sendWhatsApp(from, {
-    type: "text",
-    text: { body: "Invalid input.\nList | Exit" }
-  });
+  return sendWhatsApp(from, "Invalid input.\nList | Exit");
 }
 
 module.exports = { handleChat };
