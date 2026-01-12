@@ -1,4 +1,4 @@
-// Back option FIXED using parent_id (SAFE PATCH)
+// Back option not working in this version
 const axios = require("axios");
 const db = require("./db");
 
@@ -49,6 +49,7 @@ async function handleChat(from, text, redisClient) {
      GREETING
   ===================== */
   if (["hi", "hello", "hey"].includes(input)) {
+
     const [[customer]] = await db.execute(
       `SELECT id AS customer_id, cust_tier_id
        FROM customers
@@ -62,6 +63,7 @@ async function handleChat(from, text, redisClient) {
       mobile: from,
       customer_id: customer ? customer.customer_id : 0,
       cust_tier_id: customer ? customer.cust_tier_id : null,
+      createdAt: new Date().toISOString(),
       step: "start",
       cart: {}
     };
@@ -79,7 +81,7 @@ async function handleChat(from, text, redisClient) {
   ===================== */
   if (input === "list") {
     const [rows] = await db.execute(
-      `SELECT id, parent_id, category_name
+      `SELECT id, category_name
        FROM category
        WHERE parent_id = 0
        AND is_prod_present = 1
@@ -109,25 +111,6 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     BACK (SAFE)
-  ===================== */
-  if (input === "back" && session) {
-    if (session.step === "subcategory") {
-      session.step = "category";
-      session.subcategories = null;
-    } else if (session.step === "product") {
-      session.step = session.lastParentId === 0 ? "category" : "subcategory";
-      session.products = null;
-    } else if (session.step === "qty") {
-      session.step = "product";
-      session.pendingProduct = null;
-    }
-
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, "⬅️ Back\nType number again.");
-  }
-
-  /* =====================
      CATEGORY / SUBCATEGORY
   ===================== */
   if (
@@ -139,10 +122,8 @@ async function handleChat(from, text, redisClient) {
         ? session.categories[input]
         : session.subcategories[input];
 
-    session.lastParentId = selected.parent_id;
-
     const [subs] = await db.execute(
-      `SELECT id, parent_id, category_name
+      `SELECT id, category_name
        FROM category
        WHERE parent_id = ?
        AND is_prod_present = 1`,
@@ -153,26 +134,20 @@ async function handleChat(from, text, redisClient) {
       session.subcategories = {};
       session.step = "subcategory";
 
-      let msg =
-        selected.parent_id === 0
-          ? `📂 *${selected.category_name} – Subcategories*\n\n`
-          : `📂 *${selected.category_name}*\n\n`;
-
+      let msg = `📂 *${selected.category_name} – Subcategories*\n\n`;
       subs.forEach((r, i) => {
         session.subcategories[i + 1] = r;
         msg += `${i + 1}. ${r.category_name}\n`;
       });
 
-      msg += "\nType number.";
-      if (selected.parent_id > 0) msg += "\nBack";
-      msg += "\nExit";
+      msg += "\nType number.\nBack | Exit";
 
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
       return sendWhatsApp(from, msg);
     }
 
     /* =====================
-       PRODUCTS (UNCHANGED)
+       PRODUCTS (WITH SCHEME)
     ===================== */
     const [products] = await db.execute(
       `SELECT 
@@ -207,12 +182,16 @@ async function handleChat(from, text, redisClient) {
     let msg = `🛒 *Products – ${selected.category_name}*\n\n`;
     products.forEach((p, i) => {
       session.products[i + 1] = p;
-      msg += `${i + 1}. ${p.productname} – ₹${p.mrp}`;
-      if (p.scheme_name) msg += ` 🎁 *${p.scheme_name}*`;
-      msg += "\n";
+
+      let line = `${i + 1}. ${p.productname} – ₹${p.mrp}`;
+      if (p.scheme_name) {
+        line += ` 🎁 *${p.scheme_name}*`;
+      }
+
+      msg += line + "\n";
     });
 
-    msg += "\nReply product number\nBack | List | Exit";
+    msg += `\nReply *product number* to add item\n\nCart | Back | List | Exit`;
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, msg);
@@ -230,6 +209,136 @@ async function handleChat(from, text, redisClient) {
       from,
       `How many *${session.pendingProduct.productname}*?\nReply with quantity.\nBack | Exit`
     );
+  }
+
+  /* =====================
+     QTY INPUT
+  ===================== */
+  if (session?.step === "qty" && /^\d+$/.test(input)) {
+    const qty = parseInt(input);
+    const p = session.pendingProduct;
+
+    session.cart[p.id] = session.cart[p.id] || {
+      id: p.id,
+      name: p.productname,
+      qty: 0
+    };
+    session.cart[p.id].qty += qty;
+
+    session.pendingProduct = null;
+    session.step = "product";
+
+    let msg = `✅ Added *${p.productname}* x${qty}\n\n🛒 *Current Cart*\n`;
+    Object.values(session.cart).forEach(i => {
+      msg += `• ${i.name} x${i.qty}\n`;
+    });
+
+    msg += `\nReply product number to add more\nCart | Back | List | Exit`;
+
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg);
+  }
+
+  /* =====================
+     CART
+  ===================== */
+  if (input === "cart") {
+    let msg = "🛒 *Your Cart*\n\n";
+
+    if (!Object.keys(session.cart).length) {
+      msg += "Cart is empty.";
+    } else {
+      Object.values(session.cart).forEach(p => {
+        msg += `• ${p.name} x${p.qty}\n`;
+      });
+    }
+
+    msg += "\nType *Order* to place order\nBack | List | Exit";
+    return sendWhatsApp(from, msg);
+  }
+
+  /* =====================
+     ORDER
+  ===================== */
+  if (input === "order") {
+    if (!Object.keys(session.cart).length) {
+      return sendWhatsApp(from, "🛒 Cart is empty.");
+    }
+
+    let msg = "🧾 *Final Order*\n\n";
+    Object.values(session.cart).forEach(p => {
+      msg += `• ${p.name} x${p.qty}\n`;
+    });
+
+    msg += "\nConfirm order? (Yes / No)";
+    session.step = "confirm_order";
+
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg);
+  }
+
+  /* =====================
+     CONFIRM ORDER
+  ===================== */
+  if (session?.step === "confirm_order") {
+    if (input === "yes") {
+      const orderNumber = process.env.AGENCY_ID + "_" + Date.now();
+      const conn = await db.getConnection();
+
+      try {
+        await conn.beginTransaction();
+
+        await conn.execute(
+          `INSERT INTO order_master
+           (order_number, status, agency_id, customer_id, created_at, mob_number, is_sms)
+           VALUES (?, 'pending', ?, ?, NOW(), ?, 0)`,
+          [
+            orderNumber,
+            process.env.AGENCY_ID,
+            session.customer_id || 0,
+            session.mobile
+          ]
+        );
+
+        const [[orderRow]] = await conn.execute(
+          `SELECT id FROM order_master
+           WHERE order_number = ?
+           AND agency_id = ?
+           AND mob_number = ?
+           LIMIT 1`,
+          [orderNumber, process.env.AGENCY_ID, session.mobile]
+        );
+
+        for (const p of Object.values(session.cart)) {
+          await conn.execute(
+            `INSERT INTO order_slave (order_id, prod_id, quantity)
+             VALUES (?, ?, ?)`,
+            [orderRow.id, p.id, p.qty]
+          );
+        }
+
+        await conn.commit();
+        await redisClient.del(redisKey);
+
+        return sendWhatsApp(
+          from,
+          `✅ *Order Placed Successfully!*\n\n🧾 Order No: *${orderNumber}*`
+        );
+
+      } catch (err) {
+        await conn.rollback();
+        console.error(err);
+        return sendWhatsApp(from, "❌ Order failed. Please try again.");
+      } finally {
+        conn.release();
+      }
+    }
+
+    if (input === "no") {
+      session.step = "product";
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, "❌ Order cancelled.\nBack to products.");
+    }
   }
 
   /* =====================
