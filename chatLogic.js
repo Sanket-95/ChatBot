@@ -4,23 +4,6 @@ const db = require("./db");
 const SESSION_TTL = Number(process.env.SESSION_TTL || 1800);
 
 /* =====================
-   INPUT NORMALIZER (BUTTON + TEXT)
-===================== */
-function normalizeInput(text = "") {
-  const cleaned = text.replace(/[^\w\s]/gi, "").trim().toLowerCase();
-
-  if (cleaned.includes("list")) return "list";
-  if (cleaned.includes("exit")) return "exit";
-  if (cleaned.includes("back")) return "back";
-  if (cleaned.includes("cart")) return "cart";
-  if (cleaned.includes("order")) return "order";
-  if (cleaned === "yes") return "yes";
-  if (cleaned === "no") return "no";
-
-  return cleaned; // numbers remain numbers
-}
-
-/* =====================
    SEND WHATSAPP
 ===================== */
 async function sendWhatsApp(to, text) {
@@ -48,9 +31,7 @@ async function handleChat(from, text, redisClient) {
   const inputRaw = text?.trim();
   if (!inputRaw) return;
 
-  // 🔥 ONLY THIS LINE CHANGED
-  const input = normalizeInput(inputRaw);
-
+  const input = inputRaw.toLowerCase();
   const redisKey = `session:${process.env.AGENCY}:${from}`;
   const existing = await redisClient.get(redisKey);
   let session = existing ? JSON.parse(existing) : null;
@@ -67,6 +48,7 @@ async function handleChat(from, text, redisClient) {
      BACK – REVERSE NAVIGATION
   ===================== */
   if (input === "back" && session?.current_parent_id !== undefined) {
+    // 1️⃣ Get current category record
     const [[currentCategory]] = await db.execute(
       `SELECT id, parent_id, category_name
        FROM category
@@ -78,6 +60,7 @@ async function handleChat(from, text, redisClient) {
       return sendWhatsApp(from, "Type *List* to see categories.");
     }
 
+    // 2️⃣ Fetch list under the parent of current category
     const [rows] = await db.execute(
       `SELECT id, parent_id, category_name
        FROM category
@@ -89,29 +72,33 @@ async function handleChat(from, text, redisClient) {
       return sendWhatsApp(from, "No previous category available.");
     }
 
-    session.current_parent_id = currentCategory.parent_id;
+    // 3️⃣ Update session
+    session.current_parent_id = currentCategory.parent_id; // move one level up
     session.products = null;
 
     if (currentCategory.parent_id === 0) {
       session.step = "category";
       session.categories = {};
-      rows.forEach((r, i) => (session.categories[i + 1] = r));
+      rows.forEach((r, i) => session.categories[i + 1] = r);
       session.subcategories = null;
     } else {
       session.step = "subcategory";
       session.subcategories = {};
-      rows.forEach((r, i) => (session.subcategories[i + 1] = r));
+      rows.forEach((r, i) => session.subcategories[i + 1] = r);
+      session.categories = session.categories || {};
     }
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
-    let msg =
-      currentCategory.parent_id === 0
-        ? "*Category List*\n\n"
-        : "*Sub Category List*\n\n";
+    // 4️⃣ Prepare label
+    const label = currentCategory.parent_id === 0 ? "*Category List*" : "*Sub Category List*";
 
-    rows.forEach((r, i) => (msg += `${i + 1}. ${r.category_name}\n`));
-    msg += "\nType number to select\nType *back* to go previous";
+    // 5️⃣ Send WhatsApp list
+    let msg = `${label}\n\n`;
+    rows.forEach((r, i) => {
+      msg += `${i + 1}. ${r.category_name}\n`;
+    });
+    msg += `\nType number to select\nType *back* to go previous`;
 
     return sendWhatsApp(from, msg);
   }
@@ -120,6 +107,7 @@ async function handleChat(from, text, redisClient) {
      GREETING
   ===================== */
   if (["hi", "hello", "hey"].includes(input)) {
+
     const [[customer]] = await db.execute(
       `SELECT id AS customer_id, cust_tier_id
        FROM customers
@@ -136,7 +124,7 @@ async function handleChat(from, text, redisClient) {
       createdAt: new Date().toISOString(),
       step: "start",
       cart: {},
-      current_parent_id: 0
+      current_parent_id: 0 // initialize for back navigation
     };
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
@@ -182,7 +170,7 @@ async function handleChat(from, text, redisClient) {
     return sendWhatsApp(from, msg);
   }
 
-/* =====================
+  /* =====================
      CATEGORY / SUBCATEGORY
   ===================== */
   if (
