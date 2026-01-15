@@ -43,6 +43,7 @@ async function sendWhatsApp(to, text, buttons = null) {
     }
   );
 }
+
 /* =====================
    CHAT HANDLER
 ===================== */
@@ -67,21 +68,17 @@ async function handleChat(from, text, redisClient) {
      BACK – REVERSE NAVIGATION
   ===================== */
   if (input === "back" && session?.current_parent_id !== undefined) {
-  // ... existing back logic ...
+    // 1️⃣ Get current category record
+    const [[currentCategory]] = await db.execute(
+      `SELECT id, parent_id, category_name
+       FROM category
+       WHERE id = ? AND is_prod_present = 1`,
+      [session.current_parent_id]
+    );
 
-  // 5️⃣ Send WhatsApp list with buttons
-  let msg = `${label}\n\n`;
-  rows.forEach((r, i) => {
-    msg += `${i + 1}. ${r.category_name}\n`;
-  });
-  
-  return sendWhatsApp(
-    from, 
-    `${msg}\nType number to select`,
-    ["Back", "Exit"]
-  );
-}
-
+    if (!currentCategory) {
+      return sendWhatsApp(from, "Type *List* to see categories.");
+    }
 
     // 2️⃣ Fetch list under the parent of current category
     const [rows] = await db.execute(
@@ -116,21 +113,20 @@ async function handleChat(from, text, redisClient) {
     // 4️⃣ Prepare label
     const label = currentCategory.parent_id === 0 ? "*Category List*" : "*Sub Category List*";
 
-    // 5️⃣ Send WhatsApp list
+    // 5️⃣ Send WhatsApp list with buttons
     let msg = `${label}\n\n`;
     rows.forEach((r, i) => {
       msg += `${i + 1}. ${r.category_name}\n`;
     });
-    msg += `\nType number to select\nType *back* to go previous`;
+    msg += `\nType number to select`;
 
-    return sendWhatsApp(from, msg);
+    return sendWhatsApp(from, msg, ["Back", "Exit"]);
   }
 
   /* =====================
      GREETING
   ===================== */
   if (["hi", "hello", "hey"].includes(input)) {
-
     const [[customer]] = await db.execute(
       `SELECT id AS customer_id, cust_tier_id
        FROM customers
@@ -153,11 +149,11 @@ async function handleChat(from, text, redisClient) {
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
     return sendWhatsApp(
-    from,
-    `Welcome to *${process.env.AGENCY}* 👋\n\nType *List* to see categories.`,
-    ["List", "Exit"]
-  );
-}
+      from,
+      `Welcome to *${process.env.AGENCY}* 👋\n\nType *List* to see categories.`,
+      ["List", "Exit"]
+    );
+  }
 
   /* =====================
      LIST – MAIN CATEGORY
@@ -189,10 +185,10 @@ async function handleChat(from, text, redisClient) {
     });
 
     msg += "\nType category number.";
-  
-  await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-  return sendWhatsApp(from, msg, ["Back", "Exit"]);
-}
+
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg, ["Back", "Exit"]);
+  }
 
   /* =====================
      CATEGORY / SUBCATEGORY
@@ -226,10 +222,10 @@ async function handleChat(from, text, redisClient) {
       });
 
       msg += "\nType number.";
-    
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, msg, ["Back", "Exit"]);
-  }
+
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, msg, ["Back", "Exit"]);
+    }
 
     /* =====================
        PRODUCTS
@@ -273,25 +269,25 @@ async function handleChat(from, text, redisClient) {
     });
 
     msg += "\nReply product number to add item";
-  
-  await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-  return sendWhatsApp(from, msg, ["Cart", "Back", "List", "Exit"]);
-}
+
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg, ["Cart", "Back", "List", "Exit"]);
+  }
 
   /* =====================
      PRODUCT → QTY
   ===================== */
   if (session?.step === "product" && session.products?.[input]) {
-  session.pendingProduct = session.products[input];
-  session.step = "qty";
+    session.pendingProduct = session.products[input];
+    session.step = "qty";
 
-  await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-  return sendWhatsApp(
-    from,
-    `How many *${session.pendingProduct.productname}*?\nReply with quantity.`,
-    ["Back", "Exit"]
-  );
-}
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(
+      from,
+      `How many *${session.pendingProduct.productname}*?\nReply with quantity.`,
+      ["Back", "Exit"]
+    );
+  }
 
   /* =====================
      QTY INPUT
@@ -316,17 +312,17 @@ async function handleChat(from, text, redisClient) {
     });
 
     msg += "\nReply product number to add more";
-  
-  await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-  return sendWhatsApp(from, msg, ["Cart", "Back", "List", "Exit"]);
-}
+
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    return sendWhatsApp(from, msg, ["Cart", "Back", "List", "Exit"]);
+  }
 
   /* =====================
      CART
   ===================== */
   if (input === "cart") {
     let msg = "🛒 *Your Cart*\n\n";
-    
+
     if (!Object.keys(session.cart).length) {
       msg += "Cart is empty.";
     } else {
@@ -334,7 +330,7 @@ async function handleChat(from, text, redisClient) {
         msg += `• ${p.name} x${p.qty}\n`;
       });
     }
-    
+
     msg += "\nType *Order* to place order";
     return sendWhatsApp(from, msg, ["Order", "Back", "List", "Exit"]);
   }
@@ -346,15 +342,15 @@ async function handleChat(from, text, redisClient) {
     if (!Object.keys(session.cart).length) {
       return sendWhatsApp(from, "🛒 Cart is empty.");
     }
-    
+
     let msg = "🧾 *Final Order*\n\n";
     Object.values(session.cart).forEach(p => {
       msg += `• ${p.name} x${p.qty}\n`;
     });
-    
+
     msg += "\nConfirm order?";
     session.step = "confirm_order";
-    
+
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     return sendWhatsApp(from, msg, ["Yes", "No"]);
   }
@@ -416,17 +412,17 @@ async function handleChat(from, text, redisClient) {
     }
 
     if (input === "no") {
-    session.step = "product";
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, "❌ Order cancelled.\nBack to products.", ["Back", "List", "Exit"]);
+      session.step = "product";
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      return sendWhatsApp(from, "❌ Order cancelled.\nBack to products.", ["Back", "List", "Exit"]);
+    }
   }
-}
-
-
 
   /* =====================
      FALLBACK
   ===================== */
-await redisClient.expire(redisKey, SESSION_TTL);
-return sendWhatsApp(from, "Invalid input.", ["List", "Exit"]);
+  await redisClient.expire(redisKey, SESSION_TTL);
+  return sendWhatsApp(from, "Invalid input.", ["List", "Exit"]);
+}
+
 module.exports = { handleChat };
