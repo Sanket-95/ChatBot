@@ -100,7 +100,8 @@ async function handleChat(from, text, redisClient) {
     });
     msg += `\nType number to select\nType *back* to go previous`;
 
-    return sendWhatsApp(from, msg);
+    // return sendWhatsApp(from, msg);    15 - 01 -2026
+    return sendWhatsAppButtons(from, msg); 
   }
 
 
