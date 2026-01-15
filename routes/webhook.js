@@ -32,7 +32,7 @@ router.post("/", async (req, res) => {
       // Handle button responses
       const buttonResponse = message.interactive?.button_reply;
       if (buttonResponse) {
-        text = buttonResponse.id; // This will be "btn_1" or "btn_2"
+        text = buttonResponse.id; // This will be "btn_1", "btn_2", etc.
       }
     }
 
