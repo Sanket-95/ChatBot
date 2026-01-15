@@ -103,6 +103,51 @@ async function handleChat(from, text, redisClient) {
     return sendWhatsApp(from, msg);
   }
 
+
+  // Addede New YES / NO Butttons =====================
+  async function sendWhatsAppButtons(to, bodyText) {
+  await axios.post(
+    `https://graph.facebook.com/v22.0/${process.env.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: {
+          text: bodyText
+        },
+        action: {
+          buttons: [
+            {
+              type: "reply",
+              reply: {
+                id: "yes",
+                title: "✅ Yes"
+              }
+            },
+            {
+              type: "reply",
+              reply: {
+                id: "no",
+                title: "❌ No"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
+
+
+  // ===================================================
   /* =====================
      GREETING
   ===================== */
