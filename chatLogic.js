@@ -546,6 +546,10 @@ async function handleChat(from, text, redisClient) {
 
     msg += "\nType *Order* to place order";
     
+    // SET STEP TO CART BEFORE SENDING
+    session.step = "cart";
+    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    
     return sendWithNavigationButtons(from, msg, "cart", session, redisClient);
   }
 
