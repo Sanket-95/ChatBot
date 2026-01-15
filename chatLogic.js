@@ -4,7 +4,7 @@ const db = require("./db");
 const SESSION_TTL = Number(process.env.SESSION_TTL || 1800);
 
 /* =====================
-   SEND WHATSAPP
+   SEND WHATSAPP TEXT
 ===================== */
 async function sendWhatsApp(to, text) {
   await axios.post(
@@ -14,6 +14,42 @@ async function sendWhatsApp(to, text) {
       to,
       type: "text",
       text: { body: text }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
+
+/* =====================
+   SEND WHATSAPP INTERACTIVE BUTTONS
+===================== */
+async function sendWhatsAppButtons(to, text, buttons) {
+  await axios.post(
+    `https://graph.facebook.com/v22.0/${process.env.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: {
+          text: text
+        },
+        action: {
+          buttons: buttons.map((btn, index) => ({
+            type: "reply",
+            reply: {
+              id: `btn_${index + 1}`,
+              title: btn.title
+            }
+          }))
+        }
+      }
     },
     {
       headers: {
@@ -331,14 +367,27 @@ async function handleChat(from, text, redisClient) {
     session.step = "confirm_order";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    return sendWhatsApp(from, msg);
+    
+    // Send interactive buttons for confirmation
+    return sendWhatsAppButtons(
+      from,
+      msg,
+      [
+        { title: "✅ Yes" },
+        { title: "❌ No" }
+      ]
+    );
   }
 
   /* =====================
-     CONFIRM ORDER
+     CONFIRM ORDER (HANDLES BOTH BUTTONS AND MANUAL TYPING)
   ===================== */
   if (session?.step === "confirm_order") {
-    if (input === "yes") {
+    // Handle button responses (they come as button IDs)
+    const isYesButton = input === "btn_1" || input === "yes";
+    const isNoButton = input === "btn_2" || input === "no";
+    
+    if (isYesButton) {
       const orderNumber = process.env.AGENCY_ID + "_" + Date.now();
       const conn = await db.getConnection();
 
@@ -390,7 +439,7 @@ async function handleChat(from, text, redisClient) {
       }
     }
 
-    if (input === "no") {
+    if (isNoButton) {
       session.step = "product";
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
       return sendWhatsApp(from, "❌ Order cancelled.\nBack to products.");

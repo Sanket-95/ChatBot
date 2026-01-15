@@ -17,11 +17,24 @@ router.get("/", (req, res) => {
 // Webhook POST (incoming WhatsApp messages)
 router.post("/", async (req, res) => {
   try {
-    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const entry = req.body.entry?.[0]?.changes?.[0]?.value;
+    const message = entry?.messages?.[0];
+    
     if (!message) return res.sendStatus(200);
 
     const from = message.from;
-    const text = message.text?.body;
+    let text = "";
+
+    // Handle different message types
+    if (message.type === "text") {
+      text = message.text?.body || "";
+    } else if (message.type === "interactive") {
+      // Handle button responses
+      const buttonResponse = message.interactive?.button_reply;
+      if (buttonResponse) {
+        text = buttonResponse.id; // This will be "btn_1" or "btn_2"
+      }
+    }
 
     await handleChat(from, text, req.app.locals.redisClient);
     res.sendStatus(200);
