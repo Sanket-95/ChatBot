@@ -122,15 +122,21 @@ async function handleChat(from, text, redisClient) {
   const existing = await redisClient.get(redisKey);
   let session = existing ? JSON.parse(existing) : null;
 
+  // DEBUG: Log the input and session step
+  console.log(`DEBUG: Input: ${processedInput}, Session Step: ${session?.step}`);
+
   /* =====================
      CHECK FOR ORDER CONFIRMATION FIRST (BEFORE GENERAL BUTTON HANDLER)
   ===================== */
   if (session?.step === "confirm_order") {
+    console.log(`DEBUG: In confirm_order step, processing: ${processedInput}`);
+    
     // Handle order confirmation buttons and manual typing
     const isYesButton = processedInput === "btn_1" || processedInput === "yes";
     const isNoButton = processedInput === "btn_2" || processedInput === "no";
     
     if (isYesButton) {
+      console.log("DEBUG: Processing Yes for order confirmation");
       const orderNumber = process.env.AGENCY_ID + "_" + Date.now();
       const conn = await db.getConnection();
 
@@ -183,6 +189,7 @@ async function handleChat(from, text, redisClient) {
     }
 
     if (isNoButton) {
+      console.log("DEBUG: Processing No for order confirmation");
       session.step = "product";
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
       
@@ -203,6 +210,8 @@ async function handleChat(from, text, redisClient) {
      HANDLE BUTTON RESPONSES FOR OTHER STEPS
   ===================== */
   if (processedInput.startsWith("btn_") && session?.step !== "confirm_order") {
+    console.log(`DEBUG: Button click in step: ${session?.step}, button: ${processedInput}`);
+    
     // Map button IDs to actions (only for non-confirm_order steps)
     const buttonActions = {
       "btn_1": { // First button
@@ -218,7 +227,7 @@ async function handleChat(from, text, redisClient) {
         "start": "exit",
         "subcategory": "list",
         "product": "list",
-        "cart": "order",
+        "cart": "order",  // This should map to "order" in cart step
         "default": "exit"
       },
       "btn_3": { // Third button
@@ -230,16 +239,23 @@ async function handleChat(from, text, redisClient) {
     };
     
     const currentStep = session?.step || "start";
+    console.log(`DEBUG: Current step: ${currentStep}, Button: ${processedInput}`);
+    
     const buttonMap = buttonActions[processedInput];
     
     if (buttonMap) {
       const action = buttonMap[currentStep] || buttonMap["default"];
+      console.log(`DEBUG: Button action mapped to: ${action}`);
       if (action) {
         // Set processedInput to the action for processing
         processedInput = action;
+        console.log(`DEBUG: processedInput changed to: ${processedInput}`);
       }
     }
   }
+
+  // DEBUG: Log after button processing
+  console.log(`DEBUG: After button processing: ${processedInput}`);
 
   /* =====================
      EXIT
@@ -347,6 +363,7 @@ async function handleChat(from, text, redisClient) {
      LIST – MAIN CATEGORY
   ===================== */
   if (processedInput === "list") {
+    console.log("DEBUG: Processing list command");
     const [rows] = await db.execute(
       `SELECT id, category_name, parent_id
        FROM category
@@ -516,6 +533,7 @@ async function handleChat(from, text, redisClient) {
      CART
   ===================== */
   if (processedInput === "cart") {
+    console.log("DEBUG: Processing cart command");
     let msg = "🛒 *Your Cart*\n\n";
 
     if (!Object.keys(session.cart).length) {
@@ -535,6 +553,7 @@ async function handleChat(from, text, redisClient) {
      ORDER
   ===================== */
   if (processedInput === "order") {
+    console.log("DEBUG: Processing order command");
     if (!Object.keys(session.cart).length) {
       return sendWhatsApp(from, "🛒 Cart is empty.");
     }
