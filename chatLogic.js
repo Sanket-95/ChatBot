@@ -141,7 +141,7 @@ async function handleChat(from, text, redisClient) {
         "start": "exit",
         "subcategory": "list",
         "product": "list",
-        "cart": "order",
+        "cart": "order", // FIXED: This should be "order" not "exit"
         "default": "exit"
       },
       "btn_3": { // Third button
@@ -430,10 +430,7 @@ async function handleChat(from, text, redisClient) {
       }\n`;
     });
     
-    // productsMsg += "\nReply product number to add item";
-    productsMsg += "\n\nReply with the product number to add an item to your cart."
-            + "\nType *CART* to view your cart."
-            + "\nType *ORDER* to place your order.";
+    productsMsg += "\nReply product number to add item";
     
     return sendWithNavigationButtons(from, productsMsg, "product", session, redisClient);
   }
@@ -475,7 +472,7 @@ async function handleChat(from, text, redisClient) {
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     
-    // Send interactive buttons for confirmation (YES/NO only)
+    // Send interactive buttons for confirmation (YES/NO only) with unique IDs
     return sendWhatsAppButtons(
       from,
       msg,
@@ -490,9 +487,22 @@ async function handleChat(from, text, redisClient) {
      CONFIRM ORDER (HANDLES BOTH BUTTONS AND MANUAL TYPING)
   ===================== */
   if (session?.step === "confirm_order") {
-    // Handle button responses (they come as button IDs)
-    const isYesButton = processedInput === "btn_1" || processedInput === "yes";
-    const isNoButton = processedInput === "btn_2" || processedInput === "no";
+    // Handle button responses - for order confirmation, we need to handle btn_1 and btn_2 specifically
+    let isYesButton = false;
+    let isNoButton = false;
+    
+    // Check for manual typing first
+    if (processedInput === "yes") {
+      isYesButton = true;
+    } else if (processedInput === "no") {
+      isNoButton = true;
+    } 
+    // Check for button clicks (order confirmation buttons use btn_1 and btn_2)
+    else if (processedInput === "btn_1") {
+      isYesButton = true;
+    } else if (processedInput === "btn_2") {
+      isNoButton = true;
+    }
     
     if (isYesButton) {
       const orderNumber = process.env.AGENCY_ID + "_" + Date.now();
