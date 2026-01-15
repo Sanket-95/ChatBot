@@ -7,59 +7,92 @@ const SESSION_TTL = Number(process.env.SESSION_TTL || 1800);
    SEND WHATSAPP
 ===================== */
 async function sendWhatsApp(to, text, buttons = null) {
+  console.log(`📤 Sending to ${to}: "${text.substring(0, 50)}..."`);
+  if (buttons) console.log(`🔼 Buttons: ${buttons.join(", ")}`);
+
   const payload = {
     messaging_product: "whatsapp",
-    to,
+    to: to,
+    type: buttons ? "interactive" : "text"
   };
 
   if (buttons) {
-    payload.type = "interactive";
     payload.interactive = {
       type: "button",
-      body: { text: text },
+      body: {
+        text: text
+      },
       action: {
         buttons: buttons.map((btn, index) => ({
           type: "reply",
           reply: {
             id: `btn_${index + 1}`,
-            title: btn,
-          },
-        })),
-      },
+            title: btn
+          }
+        }))
+      }
     };
   } else {
-    payload.type = "text";
-    payload.text = { body: text };
+    payload.text = {
+      body: text
+    };
   }
 
-  await axios.post(
-    `https://graph.facebook.com/v22.0/${process.env.PHONE_NUMBER_ID}/messages`,
-    payload,
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  console.log("📤 Sending payload:", JSON.stringify(payload, null, 2));
+
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v22.0/${process.env.PHONE_NUMBER_ID}/messages`,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+    console.log(`✅ Message sent successfully`);
+    return response.data;
+  } catch (error) {
+    console.error(`❌ Error sending message:`, error.response?.data || error.message);
+    throw error;
+  }
 }
 
 /* =====================
    CHAT HANDLER
 ===================== */
 async function handleChat(from, text, redisClient) {
+  console.log(`\n=== HANDLING CHAT ===`);
+  console.log(`📞 From: ${from}`);
+  console.log(`📝 Input: "${text}"`);
+  
   const inputRaw = text?.trim();
-  if (!inputRaw) return;
+  if (!inputRaw) {
+    console.log(`❌ No input text`);
+    return;
+  }
 
   const input = inputRaw.toLowerCase();
+  console.log(`🔍 Processed input: "${input}"`);
+  
   const redisKey = `session:${process.env.AGENCY}:${from}`;
+  console.log(`🗝️ Redis key: ${redisKey}`);
+  
   const existing = await redisClient.get(redisKey);
   let session = existing ? JSON.parse(existing) : null;
+  
+  console.log(`📊 Session exists: ${!!session}`);
+  if (session) {
+    console.log(`📋 Session step: ${session.step}`);
+    console.log(`🛒 Cart items: ${Object.keys(session.cart || {}).length}`);
+  }
 
   /* =====================
      EXIT
   ===================== */
   if (input === "exit") {
+    console.log(`🚪 Exit command detected`);
     await redisClient.del(redisKey);
     return sendWhatsApp(from, "Session ended.\nType *Hi* to start again.");
   }
@@ -68,6 +101,8 @@ async function handleChat(from, text, redisClient) {
      BACK – REVERSE NAVIGATION
   ===================== */
   if (input === "back" && session?.current_parent_id !== undefined) {
+    console.log(`🔙 Back command detected, current_parent_id: ${session.current_parent_id}`);
+    
     // 1️⃣ Get current category record
     const [[currentCategory]] = await db.execute(
       `SELECT id, parent_id, category_name
@@ -77,8 +112,11 @@ async function handleChat(from, text, redisClient) {
     );
 
     if (!currentCategory) {
+      console.log(`❌ No current category found`);
       return sendWhatsApp(from, "Type *List* to see categories.");
     }
+
+    console.log(`📂 Current category: ${currentCategory.category_name} (ID: ${currentCategory.id}, Parent: ${currentCategory.parent_id})`);
 
     // 2️⃣ Fetch list under the parent of current category
     const [rows] = await db.execute(
@@ -87,6 +125,8 @@ async function handleChat(from, text, redisClient) {
        WHERE parent_id = ? AND is_prod_present = 1`,
       [currentCategory.parent_id]
     );
+
+    console.log(`📋 Found ${rows.length} items in parent category`);
 
     if (!rows.length) {
       return sendWhatsApp(from, "No previous category available.");
@@ -101,17 +141,20 @@ async function handleChat(from, text, redisClient) {
       session.categories = {};
       rows.forEach((r, i) => session.categories[i + 1] = r);
       session.subcategories = null;
+      console.log(`📁 Moved to category level`);
     } else {
       session.step = "subcategory";
       session.subcategories = {};
       rows.forEach((r, i) => session.subcategories[i + 1] = r);
       session.categories = session.categories || {};
+      console.log(`📁 Moved to subcategory level`);
     }
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
 
     // 4️⃣ Prepare label
     const label = currentCategory.parent_id === 0 ? "*Category List*" : "*Sub Category List*";
+    console.log(`🏷️ Label: ${label}`);
 
     // 5️⃣ Send WhatsApp list with buttons
     let msg = `${label}\n\n`;
@@ -120,6 +163,7 @@ async function handleChat(from, text, redisClient) {
     });
     msg += `\nType number to select`;
 
+    console.log(`📤 Sending back navigation response`);
     return sendWhatsApp(from, msg, ["Back", "Exit"]);
   }
 
@@ -127,6 +171,8 @@ async function handleChat(from, text, redisClient) {
      GREETING
   ===================== */
   if (["hi", "hello", "hey"].includes(input)) {
+    console.log(`👋 Greeting detected: "${input}"`);
+
     const [[customer]] = await db.execute(
       `SELECT id AS customer_id, cust_tier_id
        FROM customers
@@ -134,6 +180,8 @@ async function handleChat(from, text, redisClient) {
        LIMIT 1`,
       [`%${from}%`]
     );
+
+    console.log(`👤 Customer found: ${!!customer}, ID: ${customer?.customer_id || 'none'}`);
 
     session = {
       agency: process.env.AGENCY,
@@ -147,6 +195,7 @@ async function handleChat(from, text, redisClient) {
     };
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    console.log(`💾 New session created, step: ${session.step}`);
 
     return sendWhatsApp(
       from,
@@ -159,6 +208,8 @@ async function handleChat(from, text, redisClient) {
      LIST – MAIN CATEGORY
   ===================== */
   if (input === "list") {
+    console.log(`📋 List command detected`);
+
     const [rows] = await db.execute(
       `SELECT id, category_name, parent_id
        FROM category
@@ -171,6 +222,8 @@ async function handleChat(from, text, redisClient) {
          )`,
       [process.env.AGENCY_ID]
     );
+
+    console.log(`📦 Found ${rows.length} categories`);
 
     session.categories = {};
     session.subcategories = null;
@@ -187,6 +240,7 @@ async function handleChat(from, text, redisClient) {
     msg += "\nType category number.";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    console.log(`💾 Session updated, step: ${session.step}`);
     return sendWhatsApp(from, msg, ["Back", "Exit"]);
   }
 
@@ -202,6 +256,8 @@ async function handleChat(from, text, redisClient) {
         ? session.categories[input]
         : session.subcategories[input];
 
+    console.log(`🎯 Selected: ${selected.category_name} (ID: ${selected.id}, Step: ${session.step})`);
+
     session.current_parent_id = selected.id; // update current_parent_id
 
     const [subs] = await db.execute(
@@ -210,6 +266,8 @@ async function handleChat(from, text, redisClient) {
        WHERE parent_id = ? AND is_prod_present = 1`,
       [selected.id]
     );
+
+    console.log(`🔍 Found ${subs.length} subcategories`);
 
     if (subs.length) {
       session.subcategories = {};
@@ -224,12 +282,15 @@ async function handleChat(from, text, redisClient) {
       msg += "\nType number.";
 
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      console.log(`💾 Session updated, step: ${session.step}`);
       return sendWhatsApp(from, msg, ["Back", "Exit"]);
     }
 
     /* =====================
        PRODUCTS
     ===================== */
+    console.log(`🛍️ Loading products for category ID: ${selected.id}`);
+    
     const [products] = await db.execute(
       `SELECT 
           p.id,
@@ -257,6 +318,8 @@ async function handleChat(from, text, redisClient) {
       ]
     );
 
+    console.log(`📊 Found ${products.length} products`);
+
     session.products = {};
     session.step = "product";
 
@@ -271,6 +334,7 @@ async function handleChat(from, text, redisClient) {
     msg += "\nReply product number to add item";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    console.log(`💾 Session updated, step: ${session.step}, products: ${Object.keys(session.products).length}`);
     return sendWhatsApp(from, msg, ["Cart", "Back", "List", "Exit"]);
   }
 
@@ -278,10 +342,15 @@ async function handleChat(from, text, redisClient) {
      PRODUCT → QTY
   ===================== */
   if (session?.step === "product" && session.products?.[input]) {
-    session.pendingProduct = session.products[input];
+    const product = session.products[input];
+    console.log(`🛍️ Product selected: ${product.productname} (Index: ${input})`);
+    
+    session.pendingProduct = product;
     session.step = "qty";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    console.log(`💾 Session updated, step: ${session.step}, pending product: ${session.pendingProduct.productname}`);
+    
     return sendWhatsApp(
       from,
       `How many *${session.pendingProduct.productname}*?\nReply with quantity.`,
@@ -295,6 +364,8 @@ async function handleChat(from, text, redisClient) {
   if (session?.step === "qty" && /^\d+$/.test(input)) {
     const qty = parseInt(input);
     const p = session.pendingProduct;
+    
+    console.log(`🔢 Quantity entered: ${qty} for ${p.productname}`);
 
     session.cart[p.id] = session.cart[p.id] || {
       id: p.id,
@@ -314,6 +385,7 @@ async function handleChat(from, text, redisClient) {
     msg += "\nReply product number to add more";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    console.log(`💾 Session updated, step: ${session.step}, cart items: ${Object.values(session.cart).length}`);
     return sendWhatsApp(from, msg, ["Cart", "Back", "List", "Exit"]);
   }
 
@@ -321,14 +393,18 @@ async function handleChat(from, text, redisClient) {
      CART
   ===================== */
   if (input === "cart") {
+    console.log(`🛒 Cart command detected`);
+    
     let msg = "🛒 *Your Cart*\n\n";
 
     if (!Object.keys(session.cart).length) {
       msg += "Cart is empty.";
+      console.log(`🛒 Cart is empty`);
     } else {
       Object.values(session.cart).forEach(p => {
         msg += `• ${p.name} x${p.qty}\n`;
       });
+      console.log(`🛒 Cart has ${Object.values(session.cart).length} items`);
     }
 
     msg += "\nType *Order* to place order";
@@ -339,7 +415,10 @@ async function handleChat(from, text, redisClient) {
      ORDER
   ===================== */
   if (input === "order") {
+    console.log(`📦 Order command detected`);
+    
     if (!Object.keys(session.cart).length) {
+      console.log(`❌ Cannot order: cart is empty`);
       return sendWhatsApp(from, "🛒 Cart is empty.");
     }
 
@@ -352,6 +431,7 @@ async function handleChat(from, text, redisClient) {
     session.step = "confirm_order";
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+    console.log(`💾 Session updated, step: ${session.step}, confirming order`);
     return sendWhatsApp(from, msg, ["Yes", "No"]);
   }
 
@@ -359,7 +439,11 @@ async function handleChat(from, text, redisClient) {
      CONFIRM ORDER
   ===================== */
   if (session?.step === "confirm_order") {
+    console.log(`✅ Confirm order response: "${input}"`);
+    
     if (input === "yes") {
+      console.log(`🔄 Processing order...`);
+      
       const orderNumber = process.env.AGENCY_ID + "_" + Date.now();
       const conn = await db.getConnection();
 
@@ -398,13 +482,14 @@ async function handleChat(from, text, redisClient) {
         await conn.commit();
         await redisClient.del(redisKey);
 
+        console.log(`✅ Order placed successfully: ${orderNumber}`);
         return sendWhatsApp(
           from,
           `✅ *Order Placed Successfully!*\n\n🧾 Order No: *${orderNumber}*`
         );
       } catch (err) {
         await conn.rollback();
-        console.error(err);
+        console.error(`❌ Order failed:`, err);
         return sendWhatsApp(from, "❌ Order failed. Please try again.");
       } finally {
         conn.release();
@@ -412,6 +497,7 @@ async function handleChat(from, text, redisClient) {
     }
 
     if (input === "no") {
+      console.log(`❌ Order cancelled by user`);
       session.step = "product";
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
       return sendWhatsApp(from, "❌ Order cancelled.\nBack to products.", ["Back", "List", "Exit"]);
@@ -421,6 +507,7 @@ async function handleChat(from, text, redisClient) {
   /* =====================
      FALLBACK
   ===================== */
+  console.log(`🤷 No matching command for: "${input}", step: ${session?.step || 'no session'}`);
   await redisClient.expire(redisKey, SESSION_TTL);
   return sendWhatsApp(from, "Invalid input.", ["List", "Exit"]);
 }
