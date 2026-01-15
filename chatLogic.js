@@ -142,7 +142,9 @@ async function handleChat(from, text, redisClient) {
   /* =====================
      GREETING
   ===================== */
-  if (["hi", "hello", "hey"].includes(input)) {
+  // if (["hi", "hello", "hey"].includes(input)) {
+  if (["hi","hello","hey","hie","start","begin","join","get started","greetings","good morning","good afternoon","good evening","help","menu","options","support"].includes(input.toLowerCase().trim())) {
+
 
     const [[customer]] = await db.execute(
       `SELECT id AS customer_id, cust_tier_id
