@@ -84,25 +84,10 @@ async function sendWithNavigationButtons(from, msg, currentStep, session, redisC
       break;
       
     case "subcategory":
-      buttons = [
-        { title: "🔙 Back" },
-        { title: "📋 List" },
-        { title: "🚪 Exit" }
-      ];
-      break;
-      
     case "product":
       buttons = [
         { title: "🔙 Back" },
         { title: "📋 List" },
-        { title: "🛒 Cart" },
-        { title: "🚪 Exit" }
-      ];
-      break;
-      
-    case "qty":
-      buttons = [
-        { title: "🔙 Back" },
         { title: "🚪 Exit" }
       ];
       break;
@@ -116,10 +101,8 @@ async function sendWithNavigationButtons(from, msg, currentStep, session, redisC
       break;
       
     default:
-      buttons = [
-        { title: "📋 List" },
-        { title: "🚪 Exit" }
-      ];
+      // For qty and other steps, don't send buttons
+      return sendWhatsApp(from, msg);
   }
   
   // Send message with buttons
@@ -145,33 +128,27 @@ async function handleChat(from, text, redisClient) {
   if (processedInput.startsWith("btn_")) {
     // Map button IDs to actions
     const buttonActions = {
-      "btn_1": { // First button in array
+      "btn_1": { // First button
         "category": "list",
         "start": "list",
         "subcategory": "back",
         "product": "back",
-        "qty": "back",
         "cart": "list",
         "default": "list"
       },
-      "btn_2": { // Second button in array
+      "btn_2": { // Second button
         "category": "exit",
         "start": "exit",
         "subcategory": "list",
         "product": "list",
-        "qty": "exit",
         "cart": "order",
         "default": "exit"
       },
-      "btn_3": { // Third button in array
+      "btn_3": { // Third button
         "subcategory": "exit",
-        "product": "cart",
-        "cart": "exit",
-        "default": null
-      },
-      "btn_4": { // Fourth button in array
         "product": "exit",
-        "default": null
+        "cart": "exit",
+        "default": "exit"
       }
     };
     
@@ -250,6 +227,8 @@ async function handleChat(from, text, redisClient) {
       msg += `${i + 1}. ${r.category_name}\n`;
     });
     
+    msg += "\nType number to select";
+    
     return sendWithNavigationButtons(from, msg, session.step, session, redisClient);
   }
 
@@ -280,7 +259,7 @@ async function handleChat(from, text, redisClient) {
 
     return sendWithNavigationButtons(
       from,
-      `Welcome to *${process.env.AGENCY}* 👋\n\nTap *List* to see categories.`,
+      `Welcome to *${process.env.AGENCY}* 👋\n\nType *List* to see categories or tap the button below.`,
       "start",
       session,
       redisClient
@@ -412,12 +391,10 @@ async function handleChat(from, text, redisClient) {
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     
-    return sendWithNavigationButtons(
+    // For quantity input, send regular text message (no buttons)
+    return sendWhatsApp(
       from,
-      `How many *${session.pendingProduct.productname}*?\nReply with quantity.`,
-      "qty",
-      session,
-      redisClient
+      `How many *${session.pendingProduct.productname}*?\nReply with quantity.\nType *Back* to go back or *Exit* to leave.`
     );
   }
 
@@ -445,7 +422,17 @@ async function handleChat(from, text, redisClient) {
 
     msg += "\nReply product number to add more";
     
-    return sendWithNavigationButtons(from, msg, "product", session, redisClient);
+    // Return to products with buttons
+    let productsMsg = `🛒 *Products – Continue Shopping*\n\n`;
+    Object.entries(session.products || {}).forEach(([key, p]) => {
+      productsMsg += `${key}. ${p.productname} – ₹${p.mrp}${
+        p.scheme_name ? ` 🎁 *${p.scheme_name}*` : ""
+      }\n`;
+    });
+    
+    productsMsg += "\nReply product number to add item";
+    
+    return sendWithNavigationButtons(from, productsMsg, "product", session, redisClient);
   }
 
   /* =====================
@@ -462,7 +449,7 @@ async function handleChat(from, text, redisClient) {
       });
     }
 
-    msg += "\nTap *Order* to place order";
+    msg += "\nType *Order* to place order";
     
     return sendWithNavigationButtons(from, msg, "cart", session, redisClient);
   }
@@ -485,7 +472,7 @@ async function handleChat(from, text, redisClient) {
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     
-    // Send interactive buttons for confirmation
+    // Send interactive buttons for confirmation (YES/NO only)
     return sendWhatsAppButtons(
       from,
       msg,
@@ -560,29 +547,16 @@ async function handleChat(from, text, redisClient) {
       session.step = "product";
       await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
       
-      // Get back to products list
-      const currentCategoryId = session.current_parent_id;
-      const [[currentCategory]] = await db.execute(
-        `SELECT category_name FROM category WHERE id = ?`,
-        [currentCategoryId]
-      );
+      let msg = "❌ Order cancelled.\n\n🛒 *Products List*\n\n";
+      Object.entries(session.products || {}).forEach(([key, p]) => {
+        msg += `${key}. ${p.productname} – ₹${p.mrp}${
+          p.scheme_name ? ` 🎁 *${p.scheme_name}*` : ""
+        }\n`;
+      });
       
-      let msg = "❌ Order cancelled.\n\n";
+      msg += "\nReply product number to add item";
       
-      if (session.products) {
-        msg += `🛒 *Products – ${currentCategory?.category_name || "Selected Category"}*\n\n`;
-        Object.entries(session.products).forEach(([key, p]) => {
-          msg += `${key}. ${p.productname} – ₹${p.mrp}${
-            p.scheme_name ? ` 🎁 *${p.scheme_name}*` : ""
-          }\n`;
-        });
-        
-        msg += "\nReply product number to add item";
-        return sendWithNavigationButtons(from, msg, "product", session, redisClient);
-      } else {
-        msg += "Back to products.";
-        return sendWithNavigationButtons(from, msg, "product", session, redisClient);
-      }
+      return sendWithNavigationButtons(from, msg, "product", session, redisClient);
     }
   }
 
@@ -591,6 +565,24 @@ async function handleChat(from, text, redisClient) {
   ===================== */
   if (session) {
     await redisClient.expire(redisKey, SESSION_TTL);
+    
+    // Handle back in quantity step
+    if (session.step === "qty" && processedInput === "back") {
+      session.step = "product";
+      session.pendingProduct = null;
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      
+      let msg = `🛒 *Products – Continue Shopping*\n\n`;
+      Object.entries(session.products || {}).forEach(([key, p]) => {
+        msg += `${key}. ${p.productname} – ₹${p.mrp}${
+          p.scheme_name ? ` 🎁 *${p.scheme_name}*` : ""
+        }\n`;
+      });
+      
+      msg += "\nReply product number to add item";
+      
+      return sendWithNavigationButtons(from, msg, "product", session, redisClient);
+    }
     
     if (session.step) {
       return sendWithNavigationButtons(
