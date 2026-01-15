@@ -430,7 +430,10 @@ async function handleChat(from, text, redisClient) {
       }\n`;
     });
     
-    productsMsg += "\nReply product number to add item";
+    // productsMsg += "\nReply product number to add item";
+    productsMsg += "\n\nReply with the product number to add an item to your cart."
+            + "\nType *CART* to view your cart."
+            + "\nType *ORDER* to place your order.";
     
     return sendWithNavigationButtons(from, productsMsg, "product", session, redisClient);
   }
