@@ -123,10 +123,87 @@ async function handleChat(from, text, redisClient) {
   let session = existing ? JSON.parse(existing) : null;
 
   /* =====================
-     HANDLE BUTTON RESPONSES
+     CHECK FOR ORDER CONFIRMATION FIRST (BEFORE GENERAL BUTTON HANDLER)
   ===================== */
-  if (processedInput.startsWith("btn_")) {
-    // Map button IDs to actions
+  if (session?.step === "confirm_order") {
+    // Handle order confirmation buttons and manual typing
+    const isYesButton = processedInput === "btn_1" || processedInput === "yes";
+    const isNoButton = processedInput === "btn_2" || processedInput === "no";
+    
+    if (isYesButton) {
+      const orderNumber = process.env.AGENCY_ID + "_" + Date.now();
+      const conn = await db.getConnection();
+
+      try {
+        await conn.beginTransaction();
+
+        await conn.execute(
+          `INSERT INTO order_master
+           (order_number, status, agency_id, customer_id, created_at, mob_number, is_sms)
+           VALUES (?, 'pending', ?, ?, NOW(), ?, 0)`,
+          [
+            orderNumber,
+            process.env.AGENCY_ID,
+            session.customer_id || 0,
+            session.mobile
+          ]
+        );
+
+        const [[orderRow]] = await conn.execute(
+          `SELECT id FROM order_master
+           WHERE order_number = ?
+           AND agency_id = ?
+           AND mob_number = ?
+           LIMIT 1`,
+          [orderNumber, process.env.AGENCY_ID, session.mobile]
+        );
+
+        for (const p of Object.values(session.cart)) {
+          await conn.execute(
+            `INSERT INTO order_slave (order_id, prod_id, quantity)
+             VALUES (?, ?, ?)`,
+            [orderRow.id, p.id, p.qty]
+          );
+        }
+
+        await conn.commit();
+        await redisClient.del(redisKey);
+
+        return sendWhatsApp(
+          from,
+          `✅ *Order Placed Successfully!*\n\n🧾 Order No: *${orderNumber}*\n\nType *Hi* to start again.`
+        );
+      } catch (err) {
+        await conn.rollback();
+        console.error(err);
+        return sendWhatsApp(from, "❌ Order failed. Please try again.");
+      } finally {
+        conn.release();
+      }
+    }
+
+    if (isNoButton) {
+      session.step = "product";
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      
+      let msg = "❌ Order cancelled.\n\n🛒 *Products List*\n\n";
+      Object.entries(session.products || {}).forEach(([key, p]) => {
+        msg += `${key}. ${p.productname} – ₹${p.mrp}${
+          p.scheme_name ? ` 🎁 *${p.scheme_name}*` : ""
+        }\n`;
+      });
+      
+      msg += "\nReply product number to add item";
+      
+      return sendWithNavigationButtons(from, msg, "product", session, redisClient);
+    }
+  }
+
+  /* =====================
+     HANDLE BUTTON RESPONSES FOR OTHER STEPS
+  ===================== */
+  if (processedInput.startsWith("btn_") && session?.step !== "confirm_order") {
+    // Map button IDs to actions (only for non-confirm_order steps)
     const buttonActions = {
       "btn_1": { // First button
         "category": "list",
@@ -141,7 +218,7 @@ async function handleChat(from, text, redisClient) {
         "start": "exit",
         "subcategory": "list",
         "product": "list",
-        "cart": "order", // FIXED: This should be "order" not "exit"
+        "cart": "order",
         "default": "exit"
       },
       "btn_3": { // Third button
@@ -472,7 +549,7 @@ async function handleChat(from, text, redisClient) {
 
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
     
-    // Send interactive buttons for confirmation (YES/NO only) with unique IDs
+    // Send interactive buttons for confirmation (YES/NO only)
     return sendWhatsAppButtons(
       from,
       msg,
@@ -481,96 +558,6 @@ async function handleChat(from, text, redisClient) {
         { title: "❌ No" }
       ]
     );
-  }
-
-  /* =====================
-     CONFIRM ORDER (HANDLES BOTH BUTTONS AND MANUAL TYPING)
-  ===================== */
-  if (session?.step === "confirm_order") {
-    // Handle button responses - for order confirmation, we need to handle btn_1 and btn_2 specifically
-    let isYesButton = false;
-    let isNoButton = false;
-    
-    // Check for manual typing first
-    if (processedInput === "yes") {
-      isYesButton = true;
-    } else if (processedInput === "no") {
-      isNoButton = true;
-    } 
-    // Check for button clicks (order confirmation buttons use btn_1 and btn_2)
-    else if (processedInput === "btn_1") {
-      isYesButton = true;
-    } else if (processedInput === "btn_2") {
-      isNoButton = true;
-    }
-    
-    if (isYesButton) {
-      const orderNumber = process.env.AGENCY_ID + "_" + Date.now();
-      const conn = await db.getConnection();
-
-      try {
-        await conn.beginTransaction();
-
-        await conn.execute(
-          `INSERT INTO order_master
-           (order_number, status, agency_id, customer_id, created_at, mob_number, is_sms)
-           VALUES (?, 'pending', ?, ?, NOW(), ?, 0)`,
-          [
-            orderNumber,
-            process.env.AGENCY_ID,
-            session.customer_id || 0,
-            session.mobile
-          ]
-        );
-
-        const [[orderRow]] = await conn.execute(
-          `SELECT id FROM order_master
-           WHERE order_number = ?
-           AND agency_id = ?
-           AND mob_number = ?
-           LIMIT 1`,
-          [orderNumber, process.env.AGENCY_ID, session.mobile]
-        );
-
-        for (const p of Object.values(session.cart)) {
-          await conn.execute(
-            `INSERT INTO order_slave (order_id, prod_id, quantity)
-             VALUES (?, ?, ?)`,
-            [orderRow.id, p.id, p.qty]
-          );
-        }
-
-        await conn.commit();
-        await redisClient.del(redisKey);
-
-        return sendWhatsApp(
-          from,
-          `✅ *Order Placed Successfully!*\n\n🧾 Order No: *${orderNumber}*\n\nType *Hi* to start again.`
-        );
-      } catch (err) {
-        await conn.rollback();
-        console.error(err);
-        return sendWhatsApp(from, "❌ Order failed. Please try again.");
-      } finally {
-        conn.release();
-      }
-    }
-
-    if (isNoButton) {
-      session.step = "product";
-      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      
-      let msg = "❌ Order cancelled.\n\n🛒 *Products List*\n\n";
-      Object.entries(session.products || {}).forEach(([key, p]) => {
-        msg += `${key}. ${p.productname} – ₹${p.mrp}${
-          p.scheme_name ? ` 🎁 *${p.scheme_name}*` : ""
-        }\n`;
-      });
-      
-      msg += "\nReply product number to add item";
-      
-      return sendWithNavigationButtons(from, msg, "product", session, redisClient);
-    }
   }
 
   /* =====================
