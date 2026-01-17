@@ -95,8 +95,8 @@ async function sendWithNavigationButtons(from, msg, currentStep, session, redisC
     case "cart":
       buttons = [
         { title: "📋 List" },
-        { title: "📦 Order" },
-        { title: "🚪 Exit" }
+        { title: "🗑️ Remove" },
+        { title: "📦 Order" }
       ];
       break;
       
@@ -220,7 +220,7 @@ async function handleChat(from, text, redisClient) {
         "subcategory": "back",
         "product": "back",
         "cart": "list",
-        "remove_confirm": "no",  // For remove confirmation
+        "remove_confirm": "no",  // For remove confirmation (btn_1 = No)
         "default": "list"
       },
       "btn_2": { // Second button
@@ -228,15 +228,15 @@ async function handleChat(from, text, redisClient) {
         "start": "exit",
         "subcategory": "list",
         "product": "list",
-        "cart": "order",  // Order in cart step
-        "remove_confirm": "yes",  // For remove confirmation
+        "cart": "remove",  // Changed from "order" to "remove"
+        "remove_confirm": "yes",  // For remove confirmation (btn_2 = Yes)
         "default": "exit"
       },
       "btn_3": { // Third button
         "subcategory": "exit",
         "product": "exit",
-        "cart": "exit",
-        "remove_confirm": "back",  // Back in remove confirmation
+        "cart": "order",  // Changed from "exit" to "order"
+        "remove_confirm": "back",  // For remove confirmation (btn_3 = Back)
         "default": "exit"
       }
     };
@@ -285,7 +285,7 @@ async function handleChat(from, text, redisClient) {
           msg += `• ${p.name} x${p.qty}\n`;
         });
       }
-      msg += "\nType *Order* to place order\nType *Remove* to remove items";
+      msg += "\nType *Order* to place order";
       
       return sendWithNavigationButtons(from, msg, "cart", session, redisClient);
     }
@@ -584,7 +584,7 @@ async function handleChat(from, text, redisClient) {
         msg += `• ${p.name} x${p.qty}\n`;
       });
       
-      msg += "\nType *Order* to place order\nType *Remove* to remove items";
+      msg += "\nType *Order* to place order";
     }
 
     // SET STEP TO CART BEFORE SENDING
@@ -596,8 +596,9 @@ async function handleChat(from, text, redisClient) {
 
   /* =====================
      REMOVE FROM CART - INITIATE REMOVAL
+     This works for both button click (btn_2) and text input "remove"
   ===================== */
-  if (processedInput === "remove" && session?.step === "cart") {
+  if ((processedInput === "remove" || processedInput === "btn_2") && session?.step === "cart") {
     console.log("DEBUG: Processing remove from cart command");
     
     if (!Object.keys(session.cart).length) {
@@ -639,8 +640,8 @@ async function handleChat(from, text, redisClient) {
         from,
         `❓ Are you sure you want to remove *${itemToRemove.name}* x${itemToRemove.qty} from your cart?`,
         [
-          { title: "✅ Yes" },
           { title: "❌ No" },
+          { title: "✅ Yes" },
           { title: "🔙 Back" }
         ]
       );
@@ -715,8 +716,9 @@ async function handleChat(from, text, redisClient) {
 
   /* =====================
      ORDER
+     This works for both button click (btn_3) and text input "order"
   ===================== */
-  if (processedInput === "order") {
+  if ((processedInput === "order" || processedInput === "btn_3") && session?.step === "cart") {
     console.log("DEBUG: Processing order command");
     if (!Object.keys(session.cart).length) {
       return sendWhatsApp(from, "🛒 Cart is empty.");
