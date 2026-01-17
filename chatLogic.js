@@ -95,8 +95,8 @@ async function sendWithNavigationButtons(from, msg, currentStep, session, redisC
     case "cart":
       buttons = [
         { title: "📋 List" },
-        { title: "🗑️ Remove" },
-        { title: "📦 Order" }
+        { title: "📦 Order" },
+        { title: "🚪 Exit" }
       ];
       break;
       
@@ -220,7 +220,7 @@ async function handleChat(from, text, redisClient) {
         "subcategory": "back",
         "product": "back",
         "cart": "list",
-        "remove_confirm": "no",  // For remove confirmation (btn_1 = No)
+        "remove_confirm": "yes",  // FIXED: Yes is first button in remove confirmation
         "default": "list"
       },
       "btn_2": { // Second button
@@ -228,15 +228,15 @@ async function handleChat(from, text, redisClient) {
         "start": "exit",
         "subcategory": "list",
         "product": "list",
-        "cart": "remove",  // Changed from "order" to "remove"
-        "remove_confirm": "yes",  // For remove confirmation (btn_2 = Yes)
+        "cart": "order",  // Order in cart step
+        "remove_confirm": "no",  // FIXED: No is second button in remove confirmation
         "default": "exit"
       },
       "btn_3": { // Third button
         "subcategory": "exit",
         "product": "exit",
-        "cart": "order",  // Changed from "exit" to "order"
-        "remove_confirm": "back",  // For remove confirmation (btn_3 = Back)
+        "cart": "exit",
+        "remove_confirm": "back",  // Back is third button in remove confirmation
         "default": "exit"
       }
     };
@@ -285,7 +285,7 @@ async function handleChat(from, text, redisClient) {
           msg += `• ${p.name} x${p.qty}\n`;
         });
       }
-      msg += "\nType *Order* to place order";
+      msg += "\nType *Order* to place order\nType *Remove* to remove items";
       
       return sendWithNavigationButtons(from, msg, "cart", session, redisClient);
     }
@@ -584,7 +584,7 @@ async function handleChat(from, text, redisClient) {
         msg += `• ${p.name} x${p.qty}\n`;
       });
       
-      msg += "\nType *Order* to place order";
+      msg += "\nType *Order* to place order\nType *Remove* to remove items";
     }
 
     // SET STEP TO CART BEFORE SENDING
@@ -596,9 +596,8 @@ async function handleChat(from, text, redisClient) {
 
   /* =====================
      REMOVE FROM CART - INITIATE REMOVAL
-     This works for both button click (btn_2) and text input "remove"
   ===================== */
-  if ((processedInput === "remove" || processedInput === "btn_2") && session?.step === "cart") {
+  if (processedInput === "remove" && session?.step === "cart") {
     console.log("DEBUG: Processing remove from cart command");
     
     if (!Object.keys(session.cart).length) {
@@ -640,8 +639,8 @@ async function handleChat(from, text, redisClient) {
         from,
         `❓ Are you sure you want to remove *${itemToRemove.name}* x${itemToRemove.qty} from your cart?`,
         [
-          { title: "❌ No" },
           { title: "✅ Yes" },
+          { title: "❌ No" },
           { title: "🔙 Back" }
         ]
       );
@@ -651,13 +650,18 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     CONFIRM REMOVAL
+     CONFIRM REMOVAL - FIXED BUTTON HANDLING
   ===================== */
   if (session?.step === "remove_confirm") {
-    const isYesButton = processedInput === "btn_2" || processedInput === "yes";
-    const isNoButton = processedInput === "btn_1" || processedInput === "no";
+    console.log(`DEBUG: In remove_confirm step, processing: ${processedInput}`);
+    
+    // Handle button clicks AND text inputs
+    const isYesButton = processedInput === "btn_1" || processedInput === "yes";
+    const isNoButton = processedInput === "btn_2" || processedInput === "no";
+    const isBackButton = processedInput === "btn_3" || processedInput === "back";
     
     if (isYesButton) {
+      console.log("DEBUG: Processing Yes for remove confirmation");
       // Remove the item from cart
       const itemToRemove = session.pendingRemoveItem;
       delete session.cart[itemToRemove.id];
@@ -694,7 +698,29 @@ async function handleChat(from, text, redisClient) {
     }
     
     if (isNoButton) {
+      console.log("DEBUG: Processing No for remove confirmation");
       // User said no to removal, go back to remove selection
+      delete session.pendingRemoveItem;
+      delete session.pendingRemoveIndex;
+      session.step = "remove_select";
+      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
+      
+      // Show cart items again for removal
+      const cartItems = Object.values(session.cart);
+      let msg = "🗑️ *Remove Items from Cart*\n\n";
+      
+      cartItems.forEach((item, index) => {
+        msg += `${index + 1}. ${item.name} x${item.qty}\n`;
+      });
+      
+      msg += "\nType the *number* of the item you want to remove.\nType *Back* to go back or *Exit* to leave.";
+      
+      return sendWhatsApp(from, msg);
+    }
+    
+    if (isBackButton) {
+      console.log("DEBUG: Processing Back for remove confirmation");
+      // User wants to go back to remove selection
       delete session.pendingRemoveItem;
       delete session.pendingRemoveIndex;
       session.step = "remove_select";
@@ -716,9 +742,8 @@ async function handleChat(from, text, redisClient) {
 
   /* =====================
      ORDER
-     This works for both button click (btn_3) and text input "order"
   ===================== */
-  if ((processedInput === "order" || processedInput === "btn_3") && session?.step === "cart") {
+  if (processedInput === "order") {
     console.log("DEBUG: Processing order command");
     if (!Object.keys(session.cart).length) {
       return sendWhatsApp(from, "🛒 Cart is empty.");
