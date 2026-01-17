@@ -93,21 +93,11 @@ async function sendWithNavigationButtons(from, msg, currentStep, session, redisC
       break;
       
     case "cart":
-      // Show different buttons when in cart remove mode
-      if (session?.step === "remove_cart_item") {
-        buttons = [
-          { title: "🔙 Back" },
-          { title: "✅ Done" },
-          { title: "🚪 Exit" }
-        ];
-      } else {
-        buttons = [
-          { title: "📋 List" },
-          { title: "🗑️ Remove" },
-          { title: "📦 Order" },
-          { title: "🚪 Exit" }
-        ];
-      }
+      buttons = [
+        { title: "📋 List" },
+        { title: "📦 Order" },
+        { title: "🚪 Exit" }
+      ];
       break;
       
     default:
@@ -230,7 +220,6 @@ async function handleChat(from, text, redisClient) {
         "subcategory": "back",
         "product": "back",
         "cart": "list",
-        "remove_cart_item": "back",  // Added for remove mode
         "default": "list"
       },
       "btn_2": { // Second button
@@ -238,18 +227,12 @@ async function handleChat(from, text, redisClient) {
         "start": "exit",
         "subcategory": "list",
         "product": "list",
-        "cart": "remove",  // Now maps to "remove" in cart step
-        "remove_cart_item": "done",  // Done in remove mode
+        "cart": "order",  // This should map to "order" in cart step
         "default": "exit"
       },
       "btn_3": { // Third button
         "subcategory": "exit",
         "product": "exit",
-        "cart": "order",  // Order is now third button in cart
-        "remove_cart_item": "exit",  // Exit in remove mode
-        "default": "exit"
-      },
-      "btn_4": { // Fourth button (only for cart step)
         "cart": "exit",
         "default": "exit"
       }
@@ -286,24 +269,6 @@ async function handleChat(from, text, redisClient) {
      BACK – REVERSE NAVIGATION
   ===================== */
   if (processedInput === "back" && session?.current_parent_id !== undefined) {
-    // Handle back from remove cart item mode
-    if (session.step === "remove_cart_item") {
-      session.step = "cart";
-      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      
-      let msg = "🛒 *Your Cart*\n\n";
-      if (!Object.keys(session.cart).length) {
-        msg += "Cart is empty.";
-      } else {
-        Object.values(session.cart).forEach(p => {
-          msg += `• ${p.name} x${p.qty}\n`;
-        });
-      }
-      msg += "\nType *Order* to place order";
-      
-      return sendWithNavigationButtons(from, msg, "cart", session, redisClient);
-    }
-    
     // 1️⃣ Get current category record
     const [[currentCategory]] = await db.execute(
       `SELECT id, parent_id, category_name
@@ -568,91 +533,6 @@ async function handleChat(from, text, redisClient) {
   }
 
   /* =====================
-     REMOVE FROM CART
-  ===================== */
-  if (processedInput === "remove") {
-    console.log("DEBUG: Processing remove from cart command");
-    
-    if (!Object.keys(session.cart).length) {
-      return sendWhatsApp(from, "🛒 Cart is already empty.");
-    }
-    
-    session.step = "remove_cart_item";
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    
-    // Create a numbered list of cart items for removal
-    const cartItems = Object.values(session.cart);
-    let msg = "🗑️ *Remove Items from Cart*\n\n";
-    
-    cartItems.forEach((item, index) => {
-      msg += `${index + 1}. ${item.name} x${item.qty}\n`;
-    });
-    
-    msg += "\nType the *number* of the item you want to remove.\nType *Done* when finished or *Back* to go back.";
-    
-    return sendWithNavigationButtons(from, msg, "cart", session, redisClient);
-  }
-
-  /* =====================
-     HANDLE REMOVE CART ITEM SELECTION
-  ===================== */
-  if (session?.step === "remove_cart_item" && /^\d+$/.test(processedInput)) {
-    const itemIndex = parseInt(processedInput) - 1;
-    const cartItems = Object.values(session.cart);
-    
-    if (itemIndex >= 0 && itemIndex < cartItems.length) {
-      const itemToRemove = cartItems[itemIndex];
-      
-      // Remove the item from cart
-      delete session.cart[itemToRemove.id];
-      
-      // Update session in Redis
-      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      
-      let msg = `✅ Removed *${itemToRemove.name}* from cart.\n\n`;
-      
-      if (Object.keys(session.cart).length === 0) {
-        msg += "🛒 Cart is now empty.";
-        session.step = "cart";
-      } else {
-        msg += "🛒 *Updated Cart*\n\n";
-        Object.values(session.cart).forEach(p => {
-          msg += `• ${p.name} x${p.qty}\n`;
-        });
-        
-        msg += "\nType another number to remove more items, or *Done* to finish.";
-      }
-      
-      await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-      return sendWithNavigationButtons(from, msg, "cart", session, redisClient);
-    } else {
-      return sendWhatsApp(from, "❌ Invalid item number. Please enter a valid number from the list.");
-    }
-  }
-
-  /* =====================
-     DONE (FINISH REMOVING ITEMS)
-  ===================== */
-  if (processedInput === "done" && session?.step === "remove_cart_item") {
-    console.log("DEBUG: Done removing items from cart");
-    session.step = "cart";
-    await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
-    
-    let msg = "🛒 *Your Cart*\n\n";
-    if (!Object.keys(session.cart).length) {
-      msg += "Cart is empty.";
-    } else {
-      Object.values(session.cart).forEach(p => {
-        msg += `• ${p.name} x${p.qty}\n`;
-      });
-    }
-    
-    msg += "\nType *Order* to place order";
-    
-    return sendWithNavigationButtons(from, msg, "cart", session, redisClient);
-  }
-
-  /* =====================
      CART
   ===================== */
   if (processedInput === "cart") {
@@ -665,10 +545,10 @@ async function handleChat(from, text, redisClient) {
       Object.values(session.cart).forEach(p => {
         msg += `• ${p.name} x${p.qty}\n`;
       });
-      
-      msg += "\nType *Order* to place order\nType *Remove* to remove items";
     }
 
+    msg += "\nType *Order* to place order";
+    
     // SET STEP TO CART BEFORE SENDING
     session.step = "cart";
     await redisClient.setEx(redisKey, SESSION_TTL, JSON.stringify(session));
